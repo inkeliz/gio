@@ -255,6 +255,12 @@ func (e *Editor) processKey(gtx layout.Context) {
 				e.scroller.Stop()
 			}
 		case key.EditEvent:
+			if e.SingleLine && e.Submit && ke.Text == "\n" {
+				e.events = append(e.events, SubmitEvent{
+					Text: e.Text(),
+				})
+				return
+			}
 			e.caret.scroll = true
 			e.scroller.Stop()
 			e.append(ke.Text)
