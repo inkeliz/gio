@@ -30,6 +30,7 @@ type window struct {
 	cleanfuncs            []func()
 	touches               []js.Value
 	composing             bool
+	requestFocus          bool
 
 	mu        sync.Mutex
 	scale     float32
@@ -126,6 +127,10 @@ func (w *window) addEventListeners() {
 	})
 	w.addEventListener(w.cnv, "mousedown", func(this js.Value, args []js.Value) interface{} {
 		w.pointerEvent(pointer.Press, 0, 0, args[0])
+		if w.requestFocus {
+			w.focus()
+			w.requestFocus = false
+		}
 		return nil
 	})
 	w.addEventListener(w.cnv, "mouseup", func(this js.Value, args []js.Value) interface{} {
@@ -149,6 +154,10 @@ func (w *window) addEventListeners() {
 	})
 	w.addEventListener(w.cnv, "touchstart", func(this js.Value, args []js.Value) interface{} {
 		w.touchEvent(pointer.Press, args[0])
+		if w.requestFocus {
+			w.focus()
+			w.requestFocus = false
+		}
 		return nil
 	})
 	w.addEventListener(w.cnv, "touchend", func(this js.Value, args []js.Value) interface{} {
@@ -217,6 +226,7 @@ func (w *window) blur() {
 
 func (w *window) focus() {
 	w.tarea.Call("focus")
+	w.requestFocus = true
 }
 
 func (w *window) keyEvent(e js.Value, ks key.State) {
