@@ -414,7 +414,9 @@ func (e *Editor) layout(gtx layout.Context) layout.Dimensions {
 	r.Max.X += pointerPadding
 	r.Max.X += pointerPadding
 	pointer.Rect(r).Add(gtx.Ops)
-	e.scroller.Add(gtx.Ops)
+	if e.focused || !e.SingleLine {
+		e.scroller.Add(gtx.Ops)
+	}
 	e.clicker.Add(gtx.Ops)
 	e.caret.on = false
 	if e.focused {
