@@ -74,10 +74,10 @@ func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
 		}
 	}
 	switch {
-	case pri == priNewFocus:
-		q.state = TextInputOpen
 	case hide:
 		q.state = TextInputClose
+	case pri == priNewFocus:
+		q.state = TextInputOpen
 	default:
 		q.state = TextInputKeep
 	}
