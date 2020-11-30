@@ -20,15 +20,17 @@ type keyQueue struct {
 }
 
 type keyHandler struct {
-	active bool
+	// visible will be true if the InputOp is present
+	// in the current frame.
+	visible bool
 }
 
 type listenerPriority uint8
 
 const (
-	priNone listenerPriority = iota
-	priDefault
+	priDefault listenerPriority = iota
 	priCurrentFocus
+	priNone
 	priNewFocus
 )
 
@@ -49,19 +51,18 @@ func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
 		q.handlers = make(map[event.Tag]*keyHandler)
 	}
 	for _, h := range q.handlers {
-		h.active = false
+		h.visible = false
 	}
 	q.reader.Reset(root)
-	focus, pri, hide := q.resolveFocus(events)
+
+	focus, _, keyboard := q.resolveFocus(events)
 	for k, h := range q.handlers {
-		if !h.active {
+		if k != focus && h.visible {
 			delete(q.handlers, k)
-			if q.focus == k {
-				q.focus = nil
-				hide = true
-			}
+			events.Add(k, key.FocusEvent{Focus: false})
 		}
 	}
+
 	if focus != q.focus {
 		if q.focus != nil {
 			events.Add(q.focus, key.FocusEvent{Focus: false})
@@ -70,17 +71,11 @@ func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
 		if q.focus != nil {
 			events.Add(q.focus, key.FocusEvent{Focus: true})
 		} else {
-			hide = true
+			keyboard = TextInputClose
 		}
 	}
-	switch {
-	case pri == priNewFocus:
-		q.state = TextInputOpen
-	case hide:
-		q.state = TextInputClose
-	default:
-		q.state = TextInputKeep
-	}
+
+	q.state = keyboard
 }
 
 func (q *keyQueue) Push(e event.Event, events *handlerEvents) {
@@ -89,49 +84,52 @@ func (q *keyQueue) Push(e event.Event, events *handlerEvents) {
 	}
 }
 
-func (q *keyQueue) resolveFocus(events *handlerEvents) (event.Tag, listenerPriority, bool) {
-	var k event.Tag
-	var pri listenerPriority
-	var hide bool
+func (q *keyQueue) resolveFocus(events *handlerEvents) (tag event.Tag, pri listenerPriority, keyboard TextInputState) {
 loop:
 	for encOp, ok := q.reader.Decode(); ok; encOp, ok = q.reader.Decode() {
 		switch opconst.OpType(encOp.Data[0]) {
+		case opconst.TypeKeyFocus:
+			op := decodeFocusOp(encOp.Data, encOp.Refs)
+			if op.Focus {
+				pri = priNewFocus
+			} else {
+				pri, keyboard = priNone, TextInputClose
+			}
+		case opconst.TypeKeySoftKeyboard:
+			op := decodeSoftKeyboardOp(encOp.Data, encOp.Refs)
+			if op.Show {
+				keyboard = TextInputOpen
+			} else {
+				keyboard = TextInputClose
+			}
 		case opconst.TypeKeyInput:
 			op := decodeKeyInputOp(encOp.Data, encOp.Refs)
-			var newPri listenerPriority
-			switch {
-			case op.Focus:
-				newPri = priNewFocus
-			case op.Tag == q.focus:
-				newPri = priCurrentFocus
-			default:
-				newPri = priDefault
+
+			tag = op.Tag
+			if tag == q.focus {
+				pri = priCurrentFocus
 			}
-			// Switch focus if higher priority or if focus requested.
-			if newPri.replaces(pri) {
-				k, pri = op.Tag, newPri
-			}
-			h, ok := q.handlers[op.Tag]
+
+			h, ok := q.handlers[tag]
 			if !ok {
 				h = new(keyHandler)
-				q.handlers[op.Tag] = h
-				// Reset the handler on (each) first appearance.
-				events.Add(op.Tag, key.FocusEvent{Focus: false})
+				q.handlers[tag] = h
 			}
-			h.active = true
-		case opconst.TypeHideInput:
-			hide = true
+			h.visible = true
 		case opconst.TypePush:
-			newK, newPri, h := q.resolveFocus(events)
-			hide = hide || h
+			newK, newPri, newKeyboard := q.resolveFocus(events)
+			if newKeyboard > keyboard {
+				keyboard = newKeyboard
+			}
 			if newPri.replaces(pri) {
-				k, pri = newK, newPri
+				tag, pri = newK, newPri
 			}
 		case opconst.TypePop:
 			break loop
 		}
 	}
-	return k, pri, hide
+
+	return tag, pri, keyboard
 }
 
 func (p listenerPriority) replaces(p2 listenerPriority) bool {
@@ -144,7 +142,24 @@ func decodeKeyInputOp(d []byte, refs []interface{}) key.InputOp {
 		panic("invalid op")
 	}
 	return key.InputOp{
-		Tag:   refs[0].(event.Tag),
+		Tag: refs[0].(event.Tag),
+	}
+}
+
+func decodeSoftKeyboardOp(d []byte, refs []interface{}) key.SoftKeyboardOp {
+	if opconst.OpType(d[0]) != opconst.TypeKeySoftKeyboard {
+		panic("invalid op")
+	}
+	return key.SoftKeyboardOp{
+		Show: d[1] != 0,
+	}
+}
+
+func decodeFocusOp(d []byte, refs []interface{}) key.FocusOp {
+	if opconst.OpType(d[0]) != opconst.TypeKeyFocus {
+		panic("invalid op")
+	}
+	return key.FocusOp{
 		Focus: d[1] != 0,
 	}
 }
