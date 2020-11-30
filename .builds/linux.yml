@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Unlicense OR MIT
 image: debian/testing
 packages:
  - curl
@@ -54,9 +55,6 @@ tasks:
  - test_example: |
      cd gio/example
      go test -race ./...
- - check_gofmt: |
-     cd gio
-     test -z "$(gofmt -s -l .)"
  - install_jdk8: |
      curl -so jdk.deb "https://cdn.azul.com/zulu/bin/zulu8.42.0.21-ca-jdk8.0.232-linux_amd64.deb"
      sudo apt install -y -f ./jdk.deb
@@ -78,3 +76,16 @@ tasks:
  - test_android: |
      cd gio/example
      gogio -target android ./kitchen
+ - check_gofmt: |
+     cd gio
+     test -z "$(gofmt -s -l .)"
+ - check_sign_off: |
+     set +x -e
+     cd gio
+     for hash in $(git log -n 20 --format="%H"); do
+        message=$(git log -1 --format=%B $hash)
+        if [[ ! "$message" =~ "Signed-off-by: " ]]; then
+            echo "unsigned commit $hash"
+            exit 1
+        fi
+     done
