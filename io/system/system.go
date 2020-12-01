@@ -8,6 +8,7 @@ import (
 	"image"
 	"time"
 
+	"gioui.org/internal/opconst"
 	"gioui.org/io/event"
 	"gioui.org/op"
 	"gioui.org/unit"
@@ -116,6 +117,27 @@ func (l Stage) String() string {
 	default:
 		panic("unexpected Stage value")
 	}
+}
+
+// ReadClipboardOp requests the text of the clipboard, the
+// declared handler receives `ClipboardEvent`.
+type ReadClipboardOp struct {
+	Tag event.Tag
+}
+
+// WriteClipboardOp writes the Text into the clipboard.
+type WriteClipboardOp struct {
+	Text string
+}
+
+func (h ReadClipboardOp) Add(o *op.Ops) {
+	data := o.Write1(opconst.TypeSystemClipboardReadLen, h.Tag)
+	data[0] = byte(opconst.TypeSystemClipboardRead)
+}
+
+func (h WriteClipboardOp) Add(o *op.Ops) {
+	data := o.Write1(opconst.TypeSystemClipboardWriteLen, &h.Text)
+	data[0] = byte(opconst.TypeSystemClipboardWrite)
 }
 
 func (FrameEvent) ImplementsEvent()     {}

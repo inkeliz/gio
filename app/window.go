@@ -167,6 +167,16 @@ func (w *Window) processFrame(frameStart time.Time, size image.Point, frame *op.
 	case router.TextInputClose:
 		w.driver.ShowTextInput(false)
 	}
+	if w.queue.q.ReadClipboard() {
+		go w.driverDo(func() {
+			w.driver.ReadClipboard()
+		})
+	}
+	if text, ok := w.queue.q.WriteClipboard(); ok {
+		go w.driverDo(func() {
+			w.driver.WriteClipboard(text)
+		})
+	}
 	if w.queue.q.Profiling() {
 		frameDur := time.Since(frameStart)
 		frameDur = frameDur.Truncate(100 * time.Microsecond)
