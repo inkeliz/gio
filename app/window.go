@@ -167,6 +167,18 @@ func (w *Window) processFrame(frameStart time.Time, size image.Point, frame *op.
 	case router.TextInputClose:
 		w.driver.ShowTextInput(false)
 	}
+	if w.queue.q.ReadClipboard() {
+		go w.driverDo(func() {
+			w.driver.ReadClipboard()
+			w.Invalidate()
+		})
+	}
+	if text, ok := w.queue.q.WriteClipboard(); ok {
+		go w.driverDo(func() {
+			w.driver.WriteClipboard(text)
+			w.Invalidate()
+		})
+	}
 	if w.queue.q.Profiling() {
 		frameDur := time.Since(frameStart)
 		frameDur = frameDur.Truncate(100 * time.Microsecond)
@@ -194,7 +206,7 @@ func (w *Window) Invalidate() {
 }
 
 // ReadClipboard initiates a read of the clipboard in the form
-// of a system.ClipboardEvent. Multiple reads may be coalesced
+// of a clipboard.Event. Multiple reads may be coalesced
 // to a single event.
 func (w *Window) ReadClipboard() {
 	go w.driverDo(func() {
