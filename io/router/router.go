@@ -16,6 +16,7 @@ import (
 
 	"gioui.org/internal/opconst"
 	"gioui.org/internal/ops"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -28,6 +29,7 @@ import (
 type Router struct {
 	pqueue pointerQueue
 	kqueue keyQueue
+	cqueue clipboardQueue
 
 	handlers handlerEvents
 
@@ -73,6 +75,7 @@ func (q *Router) Frame(ops *op.Ops) {
 
 	q.pqueue.Frame(ops, &q.handlers)
 	q.kqueue.Frame(ops, &q.handlers)
+	q.cqueue.Frame(ops, &q.handlers)
 	if q.handlers.HadEvents() {
 		q.wakeup = true
 		q.wakeupTime = time.Time{}
@@ -88,6 +91,8 @@ func (q *Router) Add(events ...event.Event) bool {
 			q.pqueue.Push(e, &q.handlers)
 		case key.EditEvent, key.Event, key.FocusEvent:
 			q.kqueue.Push(e, &q.handlers)
+		case clipboard.Event:
+			q.cqueue.Push(e, &q.handlers)
 		}
 	}
 	return q.handlers.HadEvents()
@@ -97,6 +102,18 @@ func (q *Router) Add(events ...event.Event) bool {
 // call to Frame.
 func (q *Router) TextInputState() TextInputState {
 	return q.kqueue.InputState()
+}
+
+// WriteClipboard returns the most recent text to be copied
+// to the clipboard, if any.
+func (q *Router) WriteClipboard() *string {
+	return q.cqueue.WriteClipboard()
+}
+
+// ReadClipboard returns true if some handler is waiting to
+// retrieve the clipboard.
+func (q *Router) ReadClipboard() bool {
+	return q.cqueue.ReadClipboard()
 }
 
 func (q *Router) collect() {
