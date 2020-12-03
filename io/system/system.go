@@ -60,12 +60,6 @@ type DestroyEvent struct {
 	Err error
 }
 
-// ClipboardEvent is sent once for each request for the
-// clipboard content.
-type ClipboardEvent struct {
-	Text string
-}
-
 // Insets is the space taken up by
 // system decoration such as translucent
 // system bars and software keyboards.
@@ -122,4 +116,3 @@ func (FrameEvent) ImplementsEvent()     {}
 func (StageEvent) ImplementsEvent()     {}
 func (*CommandEvent) ImplementsEvent()  {}
 func (DestroyEvent) ImplementsEvent()   {}
-func (ClipboardEvent) ImplementsEvent() {}

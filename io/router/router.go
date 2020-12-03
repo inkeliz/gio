@@ -16,6 +16,7 @@ import (
 
 	"gioui.org/internal/opconst"
 	"gioui.org/internal/ops"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/event"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
@@ -28,6 +29,7 @@ import (
 type Router struct {
 	pqueue pointerQueue
 	kqueue keyQueue
+	cqueue clipboardQueue
 
 	handlers handlerEvents
 
@@ -88,6 +90,8 @@ func (q *Router) Add(events ...event.Event) bool {
 			q.pqueue.Push(e, &q.handlers)
 		case key.EditEvent, key.Event, key.FocusEvent:
 			q.kqueue.Push(e, &q.handlers)
+		case clipboard.Event:
+			q.cqueue.Push(e, &q.handlers)
 		}
 	}
 	return q.handlers.HadEvents()
@@ -115,6 +119,10 @@ func (q *Router) collect() {
 			}
 			q.profiling = true
 			q.profHandlers[op.Tag] = struct{}{}
+		case opconst.TypeClipboardWrite:
+			q.cqueue.SetWriteClipboard(encOp.Data, encOp.Refs)
+		case opconst.TypeClipboardRead:
+			q.cqueue.SetReadClipboard(encOp.Data, encOp.Refs)
 		}
 	}
 }
