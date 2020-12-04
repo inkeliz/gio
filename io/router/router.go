@@ -20,6 +20,7 @@ import (
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/profile"
+	"gioui.org/io/system"
 	"gioui.org/op"
 )
 
@@ -28,6 +29,7 @@ import (
 type Router struct {
 	pqueue pointerQueue
 	kqueue keyQueue
+	squeue systemQueue
 
 	handlers handlerEvents
 
@@ -88,6 +90,8 @@ func (q *Router) Add(events ...event.Event) bool {
 			q.pqueue.Push(e, &q.handlers)
 		case key.EditEvent, key.Event, key.FocusEvent:
 			q.kqueue.Push(e, &q.handlers)
+		case system.ClipboardEvent:
+			q.squeue.Push(e, &q.handlers)
 		}
 	}
 	return q.handlers.HadEvents()
@@ -97,6 +101,18 @@ func (q *Router) Add(events ...event.Event) bool {
 // call to Frame.
 func (q *Router) TextInputState() TextInputState {
 	return q.kqueue.InputState()
+}
+
+// WriteClipboard returns the most recent text to be copied
+// to the clipboard, if any.
+func (q *Router) WriteClipboard() (string, bool) {
+	return q.squeue.WriteClipboard()
+}
+
+// ReadClipboard reports if any new handler is waiting
+// to read the clipboard.
+func (q *Router) ReadClipboard() bool {
+	return q.squeue.ReadClipboard()
 }
 
 func (q *Router) collect() {
@@ -115,6 +131,10 @@ func (q *Router) collect() {
 			}
 			q.profiling = true
 			q.profHandlers[op.Tag] = struct{}{}
+		case opconst.TypeSystemClipboardWrite:
+			q.squeue.ProcessWriteClipboard(encOp.Data, encOp.Refs)
+		case opconst.TypeSystemClipboardRead:
+			q.squeue.ProcessReadClipboard(encOp.Data, encOp.Refs)
 		}
 	}
 }
