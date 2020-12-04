@@ -16,6 +16,7 @@ import (
 
 	"gioui.org/f32"
 	"gioui.org/gesture"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
@@ -42,6 +43,8 @@ type Editor struct {
 	// Newline characters are not masked. When non-zero, the unmasked contents
 	// are accessed by Len, Text, and SetText.
 	Mask rune
+	// Clipboard enabled CTRL+V/CTRL+C shortcuts to copy/paste the content into the Editor
+	Clipboard bool
 
 	eventKey     int
 	font         text.Font
@@ -250,6 +253,16 @@ func (e *Editor) processKey(gtx layout.Context) {
 					return
 				}
 			}
+			if e.Clipboard && ke.Modifiers.Contain(key.ModCtrl) {
+				if ke.Name == "V" {
+					clipboard.ReadOp{Tag: &e.eventKey}.Add(gtx.Ops)
+					return
+				}
+				if ke.Name == "C" {
+					clipboard.WriteOp{Text: e.Text()}.Add(gtx.Ops)
+					return
+				}
+			}
 			if e.command(ke) {
 				e.caret.scroll = true
 				e.scroller.Stop()
@@ -260,6 +273,13 @@ func (e *Editor) processKey(gtx layout.Context) {
 					Text: e.Text(),
 				})
 				return
+			}
+			e.caret.scroll = true
+			e.scroller.Stop()
+			e.append(ke.Text)
+		case clipboard.Event:
+			if !e.Clipboard {
+				continue
 			}
 			e.caret.scroll = true
 			e.scroller.Stop()
