@@ -52,7 +52,7 @@ func getArchs() []string {
 	case "ios", "tvos":
 		// Only 64-bit support.
 		return []string{"arm64", "amd64"}
-	case "android":
+	case "android", "windows":
 		return []string{"arm", "arm64", "386", "amd64"}
 	default:
 		// TODO: Add flag tests.
