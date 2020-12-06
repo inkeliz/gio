@@ -78,6 +78,8 @@ var resources struct {
 	class uint16
 	// cursor is the arrow cursor resource.
 	cursor syscall.Handle
+	// icon is the application icon.
+	icon syscall.Handle
 }
 
 func Main() {
@@ -130,11 +132,16 @@ func initResources() error {
 		return err
 	}
 	resources.cursor = c
+	icon, err := windows.LoadImage(hInst, 1, windows.IMAGE_ICON, 0, 0, windows.LR_DEFAULTSIZE|windows.LR_SHARED)
+	if err == nil {
+		resources.icon = icon
+	}
 	wcls := windows.WndClassEx{
 		CbSize:        uint32(unsafe.Sizeof(windows.WndClassEx{})),
 		Style:         windows.CS_HREDRAW | windows.CS_VREDRAW | windows.CS_OWNDC,
 		LpfnWndProc:   syscall.NewCallback(windowProc),
 		HInstance:     hInst,
+		HIcon:         icon,
 		LpszClassName: syscall.StringToUTF16Ptr("GioWindow"),
 	}
 	cls, err := windows.RegisterClassEx(&wcls)
