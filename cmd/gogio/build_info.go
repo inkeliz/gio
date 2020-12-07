@@ -5,20 +5,22 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 )
 
 type buildInfo struct {
-	appID   string
-	archs   []string
-	ldflags string
-	minsdk  int
-	name    string
-	pkgDir  string
-	pkgPath string
-	tags    string
-	target  string
-	version int
+	appID    string
+	archs    []string
+	ldflags  string
+	minsdk   int
+	name     string
+	pkgDir   string
+	pkgPath  string
+	iconPath string
+	tags     string
+	target   string
+	version  int
 }
 
 func newBuildInfo(pkgPath string) (*buildInfo, error) {
@@ -28,16 +30,17 @@ func newBuildInfo(pkgPath string) (*buildInfo, error) {
 	}
 	appID := getAppID(pkgMetadata)
 	bi := &buildInfo{
-		appID:   appID,
-		archs:   getArchs(),
-		ldflags: getLdFlags(appID),
-		minsdk:  *minsdk,
-		name:    getPkgName(pkgMetadata),
-		pkgDir:  pkgMetadata.Dir,
-		pkgPath: pkgPath,
-		tags:    *extraTags,
-		target:  *target,
-		version: *version,
+		appID:    appID,
+		archs:    getArchs(),
+		ldflags:  getLdFlags(appID),
+		minsdk:   *minsdk,
+		name:     getPkgName(pkgMetadata),
+		pkgDir:   pkgMetadata.Dir,
+		pkgPath:  pkgPath,
+		iconPath: getIconPath(pkgMetadata.Dir),
+		tags:     *extraTags,
+		target:   *target,
+		version:  *version,
 	}
 	return bi, nil
 }
@@ -54,6 +57,8 @@ func getArchs() []string {
 		return []string{"arm64", "amd64"}
 	case "android":
 		return []string{"arm", "arm64", "386", "amd64"}
+	case "windows":
+		return []string{"amd64"}
 	default:
 		// TODO: Add flag tests.
 		panic("The target value has already been validated, this will never execute.")
@@ -75,6 +80,13 @@ func getLdFlags(appID string) string {
 		ldflags = append(ldflags, "-linkmode="+m)
 	}
 	return strings.Join(ldflags, " ")
+}
+
+func getIconPath(dir string) string {
+	if iconPath := *iconPath; iconPath != "" {
+		return iconPath
+	}
+	return filepath.Join(dir, "appicon.png")
 }
 
 type packageMetadata struct {
