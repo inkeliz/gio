@@ -97,7 +97,9 @@ func buildAndroid(tmpDir string, bi *buildInfo) error {
 		buildtools: buildtools,
 		androidjar: filepath.Join(platform, "android.jar"),
 	}
-
+	if bi.version == 0 {
+		bi.version = 16
+	}
 	perms := []string{"default"}
 	const permPref = "gioui.org/app/permission/"
 	cfg := &packages.Config{
@@ -351,13 +353,9 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 			return err
 		}
 	}
-	icon := *iconPath
-	if icon == "" {
-		icon = filepath.Join(bi.pkgDir, "appicon.png")
-	}
 	iconSnip := ""
-	if _, err := os.Stat(icon); err == nil {
-		err := buildIcons(resDir, icon, []iconVariant{
+	if _, err := os.Stat(bi.iconPath); err == nil {
+		err := buildIcons(resDir, bi.iconPath, []iconVariant{
 			{path: filepath.Join("mipmap-hdpi", "ic_launcher.png"), size: 72},
 			{path: filepath.Join("mipmap-xhdpi", "ic_launcher.png"), size: 96},
 			{path: filepath.Join("mipmap-xxhdpi", "ic_launcher.png"), size: 144},
