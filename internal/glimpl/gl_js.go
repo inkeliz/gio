@@ -6,16 +6,13 @@ import (
 	"errors"
 	"strings"
 	"syscall/js"
+	_ "unsafe"
 )
 
 type Functions struct {
 	Ctx                             js.Value
 	EXT_disjoint_timer_query        js.Value
 	EXT_disjoint_timer_query_webgl2 js.Value
-
-	// Cached JS arrays.
-	byteBuf  js.Value
-	int32Buf js.Value
 }
 
 type Context js.Value
@@ -27,7 +24,7 @@ func NewFunctions(ctx Context) (*Functions, error) {
 	}
 	return f, nil
 }
-
+func initGL(ctx js.Value)
 func (f *Functions) Init() error {
 	webgl2Class := js.Global().Get("WebGL2RenderingContext")
 	iswebgl2 := !webgl2Class.IsUndefined() && f.Ctx.InstanceOf(webgl2Class)
@@ -46,292 +43,334 @@ func (f *Functions) Init() error {
 			return errors.New("gl: no support for neither EXT_color_buffer_half_float nor EXT_color_buffer_float")
 		}
 	}
+	initGL(f.Ctx)
 	return nil
 }
-
 func (f *Functions) getExtension(name string) js.Value {
 	return f.Ctx.Call("getExtension", name)
 }
-
+func activeTexture(t Enum)
 func (f *Functions) ActiveTexture(t Enum) {
-	f.Ctx.Call("activeTexture", int(t))
+	activeTexture(t)
 }
+func attachShader(p Program, s Shader)
 func (f *Functions) AttachShader(p Program, s Shader) {
-	f.Ctx.Call("attachShader", js.Value(p), js.Value(s))
+	attachShader(p, s)
 }
+func beginQuery(method int, ctx js.Value, target Enum, query Query)
 func (f *Functions) BeginQuery(target Enum, query Query) {
 	if !f.EXT_disjoint_timer_query_webgl2.IsNull() {
-		f.Ctx.Call("beginQuery", int(target), js.Value(query))
+		beginQuery(1, f.Ctx, target, query)
 	} else {
-		f.EXT_disjoint_timer_query.Call("beginQueryEXT", int(target), js.Value(query))
+		beginQuery(0, f.EXT_disjoint_timer_query, target, query)
 	}
 }
+func bindAttribLocation(p Program, a Attrib, name string)
 func (f *Functions) BindAttribLocation(p Program, a Attrib, name string) {
-	f.Ctx.Call("bindAttribLocation", js.Value(p), int(a), name)
+	bindAttribLocation(p, a, name)
 }
+func bindBuffer(target Enum, b Buffer)
 func (f *Functions) BindBuffer(target Enum, b Buffer) {
-	f.Ctx.Call("bindBuffer", int(target), js.Value(b))
+	bindBuffer(target, b)
 }
+func bindBufferBase(target Enum, index int, b Buffer)
 func (f *Functions) BindBufferBase(target Enum, index int, b Buffer) {
-	f.Ctx.Call("bindBufferBase", int(target), index, js.Value(b))
+	bindBufferBase(target, index, b)
 }
+func bindFramebuffer(target Enum, fb Framebuffer)
 func (f *Functions) BindFramebuffer(target Enum, fb Framebuffer) {
-	f.Ctx.Call("bindFramebuffer", int(target), js.Value(fb))
+	bindFramebuffer(target, fb)
 }
+func bindRenderbuffer(target Enum, rb Renderbuffer)
 func (f *Functions) BindRenderbuffer(target Enum, rb Renderbuffer) {
-	f.Ctx.Call("bindRenderbuffer", int(target), js.Value(rb))
+	bindRenderbuffer(target, rb)
 }
+func bindTexture(target Enum, t Texture)
 func (f *Functions) BindTexture(target Enum, t Texture) {
-	f.Ctx.Call("bindTexture", int(target), js.Value(t))
+	bindTexture(target, t)
 }
+func blendEquation(mode Enum)
 func (f *Functions) BlendEquation(mode Enum) {
-	f.Ctx.Call("blendEquation", int(mode))
+	blendEquation(mode)
 }
+func blendFunc(sfactor, dfactor Enum)
 func (f *Functions) BlendFunc(sfactor, dfactor Enum) {
-	f.Ctx.Call("blendFunc", int(sfactor), int(dfactor))
+	blendFunc(sfactor, dfactor)
 }
+func bufferData(target Enum, src []byte, usage Enum)
 func (f *Functions) BufferData(target Enum, src []byte, usage Enum) {
-	f.Ctx.Call("bufferData", int(target), f.byteArrayOf(src), int(usage))
+	bufferData(target, src, usage)
 }
+func checkFramebufferStatus(target Enum) uint64
 func (f *Functions) CheckFramebufferStatus(target Enum) Enum {
-	return Enum(f.Ctx.Call("checkFramebufferStatus", int(target)).Int())
+	return Enum(makeValue(checkFramebufferStatus(target)).Int())
 }
+func clear(mask Enum)
 func (f *Functions) Clear(mask Enum) {
-	f.Ctx.Call("clear", int(mask))
+	clear(mask)
 }
+func clearColor(red, green, blue, alpha float64)
 func (f *Functions) ClearColor(red, green, blue, alpha float32) {
-	f.Ctx.Call("clearColor", red, green, blue, alpha)
+	clearColor(float64(red), float64(green), float64(blue), float64(alpha))
 }
+func clearDepthf(d float64)
 func (f *Functions) ClearDepthf(d float32) {
-	f.Ctx.Call("clearDepth", d)
+	clearDepthf(float64(d))
 }
+func compileShader(s Shader)
 func (f *Functions) CompileShader(s Shader) {
-	f.Ctx.Call("compileShader", js.Value(s))
+	compileShader(s)
 }
+func createBuffer() uint64
 func (f *Functions) CreateBuffer() Buffer {
-	return Buffer(f.Ctx.Call("createBuffer"))
+	return Buffer(makeValue(createBuffer()))
 }
+func createFramebuffer() uint64
 func (f *Functions) CreateFramebuffer() Framebuffer {
-	return Framebuffer(f.Ctx.Call("createFramebuffer"))
+	return Framebuffer(makeValue(createFramebuffer()))
 }
+func createProgram() uint64
 func (f *Functions) CreateProgram() Program {
-	return Program(f.Ctx.Call("createProgram"))
+	return Program(makeValue(createProgram()))
 }
+func createQuery() uint64
 func (f *Functions) CreateQuery() Query {
-	return Query(f.Ctx.Call("createQuery"))
+	return Query(makeValue(createQuery()))
 }
+func createRenderbuffer() uint64
 func (f *Functions) CreateRenderbuffer() Renderbuffer {
-	return Renderbuffer(f.Ctx.Call("createRenderbuffer"))
+	return Renderbuffer(makeValue(createRenderbuffer()))
 }
+func createShaders(ty Enum) uint64
 func (f *Functions) CreateShader(ty Enum) Shader {
-	return Shader(f.Ctx.Call("createShader", int(ty)))
+	return Shader(makeValue(createShaders(ty)))
 }
+func createTexture() uint64
 func (f *Functions) CreateTexture() Texture {
-	return Texture(f.Ctx.Call("createTexture"))
+	return Texture(makeValue(createTexture()))
 }
+func deleteBuffer(v Buffer)
 func (f *Functions) DeleteBuffer(v Buffer) {
-	f.Ctx.Call("deleteBuffer", js.Value(v))
+	deleteBuffer(v)
 }
+func deleteFramebuffer(v Framebuffer)
 func (f *Functions) DeleteFramebuffer(v Framebuffer) {
-	f.Ctx.Call("deleteFramebuffer", js.Value(v))
+	deleteFramebuffer(v)
 }
+func deleteProgram(p Program)
 func (f *Functions) DeleteProgram(p Program) {
-	f.Ctx.Call("deleteProgram", js.Value(p))
+	deleteProgram(p)
 }
+func deleteQuery(method int, ctx js.Value, query Query)
 func (f *Functions) DeleteQuery(query Query) {
 	if !f.EXT_disjoint_timer_query_webgl2.IsNull() {
-		f.Ctx.Call("deleteQuery", js.Value(query))
+		deleteQuery(1, f.Ctx, query)
 	} else {
-		f.EXT_disjoint_timer_query.Call("deleteQueryEXT", js.Value(query))
+		deleteQuery(0, f.EXT_disjoint_timer_query, query)
 	}
 }
+func deleteShader(s Shader)
 func (f *Functions) DeleteShader(s Shader) {
-	f.Ctx.Call("deleteShader", js.Value(s))
+	deleteShader(s)
 }
+func deleteRenderbuffer(v Renderbuffer)
 func (f *Functions) DeleteRenderbuffer(v Renderbuffer) {
-	f.Ctx.Call("deleteRenderbuffer", js.Value(v))
+	deleteRenderbuffer(v)
 }
+func deleteTexture(v Texture)
 func (f *Functions) DeleteTexture(v Texture) {
-	f.Ctx.Call("deleteTexture", js.Value(v))
+	deleteTexture(v)
 }
+func depthFunc(fn Enum)
 func (f *Functions) DepthFunc(fn Enum) {
-	f.Ctx.Call("depthFunc", int(fn))
+	depthFunc(fn)
 }
+func depthMask(mask bool)
 func (f *Functions) DepthMask(mask bool) {
-	f.Ctx.Call("depthMask", mask)
+	depthMask(mask)
 }
+func disableVertexAttribArray(a Attrib)
 func (f *Functions) DisableVertexAttribArray(a Attrib) {
-	f.Ctx.Call("disableVertexAttribArray", int(a))
+	disableVertexAttribArray(a)
 }
+func disable(cap Enum)
 func (f *Functions) Disable(cap Enum) {
-	f.Ctx.Call("disable", int(cap))
+	disable(cap)
 }
+func drawArrays(mode Enum, first, count int)
 func (f *Functions) DrawArrays(mode Enum, first, count int) {
-	f.Ctx.Call("drawArrays", int(mode), first, count)
+	drawArrays(mode, first, count)
 }
+func drawElements(mode Enum, count int, ty Enum, offset int)
 func (f *Functions) DrawElements(mode Enum, count int, ty Enum, offset int) {
-	f.Ctx.Call("drawElements", int(mode), count, int(ty), offset)
+	drawElements(mode, count, ty, offset)
 }
+func enable(cap Enum)
 func (f *Functions) Enable(cap Enum) {
-	f.Ctx.Call("enable", int(cap))
+	enable(cap)
 }
+func enableVertexAttribArray(a Attrib)
 func (f *Functions) EnableVertexAttribArray(a Attrib) {
-	f.Ctx.Call("enableVertexAttribArray", int(a))
+	enableVertexAttribArray(a)
 }
+func endQuery(method int, ctx js.Value, target Enum)
 func (f *Functions) EndQuery(target Enum) {
 	if !f.EXT_disjoint_timer_query_webgl2.IsNull() {
-		f.Ctx.Call("endQuery", int(target))
+		endQuery(1, f.Ctx, target)
 	} else {
-		f.EXT_disjoint_timer_query.Call("endQueryEXT", int(target))
+		endQuery(0, f.EXT_disjoint_timer_query, target)
 	}
 }
+func finish()
 func (f *Functions) Finish() {
-	f.Ctx.Call("finish")
+	finish()
 }
+func framebufferRenderbuffer(target, attachment, renderbuffertarget Enum, renderbuffer Renderbuffer)
 func (f *Functions) FramebufferRenderbuffer(target, attachment, renderbuffertarget Enum, renderbuffer Renderbuffer) {
-	f.Ctx.Call("framebufferRenderbuffer", int(target), int(attachment), int(renderbuffertarget), js.Value(renderbuffer))
+	framebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer)
 }
+func framebufferTexture2D(target, attachment, texTarget Enum, t Texture, level int)
 func (f *Functions) FramebufferTexture2D(target, attachment, texTarget Enum, t Texture, level int) {
-	f.Ctx.Call("framebufferTexture2D", int(target), int(attachment), int(texTarget), js.Value(t), level)
+	framebufferTexture2D(target, attachment, texTarget, t, level)
 }
 func (f *Functions) GetError() Enum {
 	// Avoid slow getError calls. See gio#179.
 	return 0
 }
+func getRenderbufferParameteri(target, pname Enum) uint64
 func (f *Functions) GetRenderbufferParameteri(target, pname Enum) int {
-	return paramVal(f.Ctx.Call("getRenderbufferParameteri", int(pname)))
+	return paramVal(makeValue(getRenderbufferParameteri(target, pname)))
 }
+func getFramebufferAttachmentParameteri(target, attachment, pname Enum) uint64
 func (f *Functions) GetFramebufferAttachmentParameteri(target, attachment, pname Enum) int {
-	return paramVal(f.Ctx.Call("getFramebufferAttachmentParameter", int(target), int(attachment), int(pname)))
+	return paramVal(makeValue(getFramebufferAttachmentParameteri(target, attachment, pname)))
 }
+func getBinding(pname Enum) uint64
 func (f *Functions) GetBinding(pname Enum) Object {
-	return Object(f.Ctx.Call("getParameter", int(pname)))
+	return Object(makeValue(getBinding(pname)))
 }
+func getInteger(pname Enum) uint64
 func (f *Functions) GetInteger(pname Enum) int {
-	return paramVal(f.Ctx.Call("getParameter", int(pname)))
+	return paramVal(makeValue(getInteger(pname)))
 }
+func getProgrami(p Program, pname Enum) uint64
 func (f *Functions) GetProgrami(p Program, pname Enum) int {
-	return paramVal(f.Ctx.Call("getProgramParameter", js.Value(p), int(pname)))
+	return paramVal(makeValue(getProgrami(p, pname)))
 }
+func getProgramInfoLog(p Program) uint64
 func (f *Functions) GetProgramInfoLog(p Program) string {
-	return f.Ctx.Call("getProgramInfoLog", js.Value(p)).String()
+	return makeValue(getProgramInfoLog(p)).String()
 }
+func getQueryObjectuiv(method int, ctx js.Value, query Query, pname Enum) uint64
 func (f *Functions) GetQueryObjectuiv(query Query, pname Enum) uint {
 	if !f.EXT_disjoint_timer_query_webgl2.IsNull() {
-		return uint(paramVal(f.Ctx.Call("getQueryParameter", js.Value(query), int(pname))))
+		return uint(paramVal(makeValue(getQueryObjectuiv(1, f.Ctx, query, pname))))
 	} else {
-		return uint(paramVal(f.EXT_disjoint_timer_query.Call("getQueryObjectEXT", js.Value(query), int(pname))))
+		return uint(paramVal(makeValue(getQueryObjectuiv(0, f.EXT_disjoint_timer_query, query, pname))))
 	}
 }
+func getShaderi(s Shader, pname Enum) uint64
 func (f *Functions) GetShaderi(s Shader, pname Enum) int {
-	return paramVal(f.Ctx.Call("getShaderParameter", js.Value(s), int(pname)))
+	return paramVal(makeValue(getShaderi(s, pname)))
 }
+func getShaderInfoLog(s Shader) uint64
 func (f *Functions) GetShaderInfoLog(s Shader) string {
-	return f.Ctx.Call("getShaderInfoLog", js.Value(s)).String()
+	return makeValue(getShaderInfoLog(s)).String()
 }
+func getString(method int, pname Enum) uint64
 func (f *Functions) GetString(pname Enum) string {
 	switch pname {
 	case EXTENSIONS:
-		extsjs := f.Ctx.Call("getSupportedExtensions")
+		extsjs := makeValue(getString(1, 0))
 		var exts []string
 		for i := 0; i < extsjs.Length(); i++ {
 			exts = append(exts, "GL_"+extsjs.Index(i).String())
 		}
 		return strings.Join(exts, " ")
 	default:
-		return f.Ctx.Call("getParameter", int(pname)).String()
+		return makeValue(getString(0, pname)).String()
 	}
 }
+func getUniformBlockIndex(p Program, name string) uint64
 func (f *Functions) GetUniformBlockIndex(p Program, name string) uint {
-	return uint(paramVal(f.Ctx.Call("getUniformBlockIndex", js.Value(p), name)))
+	return uint(paramVal(makeValue(getUniformBlockIndex(p, name))))
 }
+func getUniformLocation(p Program, name string) uint64
 func (f *Functions) GetUniformLocation(p Program, name string) Uniform {
-	return Uniform(f.Ctx.Call("getUniformLocation", js.Value(p), name))
+	return Uniform(makeValue(getUniformLocation(p, name)))
 }
+func invalidateFramebuffer(target, attachment Enum)
 func (f *Functions) InvalidateFramebuffer(target, attachment Enum) {
-	fn := f.Ctx.Get("invalidateFramebuffer")
-	if !fn.IsUndefined() {
-		if f.int32Buf.IsUndefined() {
-			f.int32Buf = js.Global().Get("Int32Array").New(1)
-		}
-		f.int32Buf.SetIndex(0, int32(attachment))
-		f.Ctx.Call("invalidateFramebuffer", int(target), f.int32Buf)
-	}
+	invalidateFramebuffer(target, attachment)
 }
+func linkProgram(p Program)
 func (f *Functions) LinkProgram(p Program) {
-	f.Ctx.Call("linkProgram", js.Value(p))
+	linkProgram(p)
 }
+func pixelStorei(pname Enum, param int32)
 func (f *Functions) PixelStorei(pname Enum, param int32) {
-	f.Ctx.Call("pixelStorei", int(pname), param)
+	pixelStorei(pname, param)
 }
+func renderbufferStorage(target, internalformat Enum, width, height int)
 func (f *Functions) RenderbufferStorage(target, internalformat Enum, width, height int) {
-	f.Ctx.Call("renderbufferStorage", int(target), int(internalformat), width, height)
+	renderbufferStorage(target, internalformat, width, height)
 }
+func readPixels(x, y, width, height int, format, ty Enum, data []byte)
 func (f *Functions) ReadPixels(x, y, width, height int, format, ty Enum, data []byte) {
-	f.resizeByteBuffer(len(data))
-	f.Ctx.Call("readPixels", x, y, width, height, int(format), int(ty), f.byteBuf)
-	js.CopyBytesToGo(data, f.byteBuf)
+	readPixels(x, y, width, height, format, ty, data)
 }
+func scissor(x, y, width, height int32)
 func (f *Functions) Scissor(x, y, width, height int32) {
-	f.Ctx.Call("scissor", x, y, width, height)
+	scissor(x, y, width, height)
 }
+func shaderSource(s Shader, src string)
 func (f *Functions) ShaderSource(s Shader, src string) {
-	f.Ctx.Call("shaderSource", js.Value(s), src)
+	shaderSource(s, src)
 }
+func texImage2D(target Enum, level int, internalFormat int, width, height int, format, ty Enum, data []byte)
 func (f *Functions) TexImage2D(target Enum, level int, internalFormat int, width, height int, format, ty Enum, data []byte) {
-	f.Ctx.Call("texImage2D", int(target), int(level), int(internalFormat), int(width), int(height), 0, int(format), int(ty), f.byteArrayOf(data))
+	texImage2D(target, level, internalFormat, width, height, format, ty, data)
 }
+func texSubImage2D(target Enum, level int, x, y, width, height int, format, ty Enum, data []byte)
 func (f *Functions) TexSubImage2D(target Enum, level int, x, y, width, height int, format, ty Enum, data []byte) {
-	f.Ctx.Call("texSubImage2D", int(target), level, x, y, width, height, int(format), int(ty), f.byteArrayOf(data))
+	texSubImage2D(target, level, x, y, width, height, format, ty, data)
 }
+func texParameteri(target, pname Enum, param int)
 func (f *Functions) TexParameteri(target, pname Enum, param int) {
-	f.Ctx.Call("texParameteri", int(target), int(pname), int(param))
+	texParameteri(target, pname, param)
 }
-func (f *Functions) UniformBlockBinding(p Program, uniformBlockIndex uint, uniformBlockBinding uint) {
-	f.Ctx.Call("uniformBlockBinding", js.Value(p), int(uniformBlockIndex), int(uniformBlockBinding))
+func uniformBlockBinding(p Program, uniformBlockIndex uint, uniformBlockBinding uint)
+func (f *Functions) UniformBlockBinding(p Program, blockIndex uint, blockBinding uint) {
+	uniformBlockBinding(p, blockIndex, blockBinding)
 }
-func (f *Functions) Uniform1f(dst Uniform, v float32) {
-	f.Ctx.Call("uniform1f", js.Value(dst), v)
-}
+func uniform1i(dst Uniform, v int)
 func (f *Functions) Uniform1i(dst Uniform, v int) {
-	f.Ctx.Call("uniform1i", js.Value(dst), v)
+	uniform1i(dst, v)
+}
+func uniformXf(x int, dst Uniform, v0, v1, v2, v3 float64)
+func (f *Functions) Uniform1f(dst Uniform, v0 float32) {
+	uniformXf(1, dst, float64(v0), 0, 0, 0)
 }
 func (f *Functions) Uniform2f(dst Uniform, v0, v1 float32) {
-	f.Ctx.Call("uniform2f", js.Value(dst), v0, v1)
+	uniformXf(2, dst, float64(v0), float64(v1), 0, 0)
 }
 func (f *Functions) Uniform3f(dst Uniform, v0, v1, v2 float32) {
-	f.Ctx.Call("uniform3f", js.Value(dst), v0, v1, v2)
+	uniformXf(3, dst, float64(v0), float64(v1), float64(v2), 0)
 }
 func (f *Functions) Uniform4f(dst Uniform, v0, v1, v2, v3 float32) {
-	f.Ctx.Call("uniform4f", js.Value(dst), v0, v1, v2, v3)
+	uniformXf(4, dst, float64(v0), float64(v1), float64(v2), float64(v3))
 }
+func useProgram(p Program)
 func (f *Functions) UseProgram(p Program) {
-	f.Ctx.Call("useProgram", js.Value(p))
+	useProgram(p)
 }
+func vertexAttribPointer(dst Attrib, size int, ty Enum, normalized bool, stride, offset int)
 func (f *Functions) VertexAttribPointer(dst Attrib, size int, ty Enum, normalized bool, stride, offset int) {
-	f.Ctx.Call("vertexAttribPointer", int(dst), size, int(ty), normalized, stride, offset)
+	vertexAttribPointer(dst, size, ty, normalized, stride, offset)
 }
+func viewport(x, y, width, height int)
 func (f *Functions) Viewport(x, y, width, height int) {
-	f.Ctx.Call("viewport", x, y, width, height)
-}
-
-func (f *Functions) byteArrayOf(data []byte) js.Value {
-	if len(data) == 0 {
-		return js.Null()
-	}
-	f.resizeByteBuffer(len(data))
-	js.CopyBytesToJS(f.byteBuf, data)
-	return f.byteBuf
-}
-
-func (f *Functions) resizeByteBuffer(n int) {
-	if n == 0 {
-		return
-	}
-	if !f.byteBuf.IsUndefined() && f.byteBuf.Length() >= n {
-		return
-	}
-	f.byteBuf = js.Global().Get("Uint8Array").New(n)
+	viewport(x, y, width, height)
 }
 
 func paramVal(v js.Value) int {
@@ -348,3 +387,6 @@ func paramVal(v js.Value) int {
 		panic("unknown parameter type")
 	}
 }
+
+//go:linkname makeValue syscall/js.makeValue
+func makeValue(r uint64) js.Value
