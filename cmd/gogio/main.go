@@ -24,7 +24,7 @@ import (
 var (
 	target        = flag.String("target", "", "specify target (ios, tvos, android, js).\n")
 	archNames     = flag.String("arch", "", "specify architecture(s) to include (arm, arm64, amd64).")
-	minsdk        = flag.Int("minsdk", 16, "specify minimum supported Android platform sdk version (e.g. 28 for android28 a.k.a. Android 9 Pie).")
+	minsdk        = flag.Int("minsdk", 0, "specify the minimum supported operating system level")
 	buildMode     = flag.String("buildmode", "exe", "specify buildmode (archive, exe)")
 	destPath      = flag.String("o", "", "output file or directory.\nFor -target ios or tvos, use the .app suffix to target simulators.")
 	appID         = flag.String("appid", "", "app identifier (for -buildmode=exe)")
@@ -46,7 +46,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "gogio: %v\n", err)
 		os.Exit(1)
 	}
-	buildInfo, err := newBuildInfo(getPkgAbsPath())
+	buildInfo, err := newBuildInfo(flag.Arg(0))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gogio: %v\n", err)
 		os.Exit(1)
@@ -63,14 +63,11 @@ func flagValidate() error {
 	if pkgPathArg == "" {
 		return errors.New("specify a package")
 	}
-	if _, err := filepath.Abs(pkgPathArg); err != nil {
-		return err
-	}
 	if *target == "" {
 		return errors.New("please specify -target")
 	}
 	switch *target {
-	case "ios", "tvos", "android", "js":
+	case "ios", "tvos", "android", "js", "windows":
 	default:
 		return fmt.Errorf("invalid -target %s", *target)
 	}
@@ -99,6 +96,8 @@ func build(bi *buildInfo) error {
 		return buildIOS(tmpDir, *target, bi)
 	case "android":
 		return buildAndroid(tmpDir, bi)
+	case "windows":
+		return buildWindows(tmpDir, bi)
 	default:
 		panic("unreachable")
 	}
@@ -191,13 +190,6 @@ func buildIcons(baseDir, icon string, variants []iconVariant) error {
 	for _, v := range variants {
 		v := v
 		resizes.Go(func() (err error) {
-			scaled := image.NewNRGBA(image.Rectangle{Max: image.Point{X: v.size, Y: v.size}})
-			op := draw.Src
-			if v.fill {
-				op = draw.Over
-				draw.Draw(scaled, scaled.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
-			}
-			draw.CatmullRom.Scale(scaled, scaled.Bounds(), img, img.Bounds(), op, nil)
 			path := filepath.Join(baseDir, v.path)
 			if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 				return err
@@ -211,8 +203,20 @@ func buildIcons(baseDir, icon string, variants []iconVariant) error {
 					err = cerr
 				}
 			}()
-			return png.Encode(f, scaled)
+			return png.Encode(f, resizeIcon(v, img))
 		})
 	}
 	return resizes.Wait()
+}
+
+func resizeIcon(v iconVariant, img image.Image) *image.NRGBA {
+	scaled := image.NewNRGBA(image.Rectangle{Max: image.Point{X: v.size, Y: v.size}})
+	op := draw.Src
+	if v.fill {
+		op = draw.Over
+		draw.Draw(scaled, scaled.Bounds(), &image.Uniform{color.White}, image.Point{}, draw.Src)
+	}
+	draw.CatmullRom.Scale(scaled, scaled.Bounds(), img, img.Bounds(), op, nil)
+
+	return scaled
 }

@@ -22,7 +22,7 @@ type LoaderStyle struct {
 
 func Loader(th *Theme) LoaderStyle {
 	return LoaderStyle{
-		Color: th.Color.Primary,
+		Color: th.Palette.ContrastBg,
 	}
 }
 
@@ -67,15 +67,17 @@ func clipLoader(ops *op.Ops, startAngle, endAngle, radius float64) {
 		pen    = f32.Pt(float32(vx), float32(vy)).Mul(float32(radius))
 		center = f32.Pt(0, 0).Sub(pen)
 
-		style = clip.StrokeStyle{
-			Cap: clip.FlatCap,
-		}
-
 		p clip.Path
 	)
 
 	p.Begin(ops)
 	p.Move(pen)
 	p.Arc(center, center, delta)
-	p.Stroke(width, style).Add(ops)
+	clip.Stroke{
+		Path: p.End(),
+		Style: clip.StrokeStyle{
+			Width: width,
+			Cap:   clip.FlatCap,
+		},
+	}.Op().Add(ops)
 }

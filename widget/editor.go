@@ -16,6 +16,7 @@ import (
 
 	"gioui.org/f32"
 	"gioui.org/gesture"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/layout"
@@ -145,7 +146,7 @@ type SubmitEvent struct {
 }
 
 type line struct {
-	offset f32.Point
+	offset image.Point
 	clip   op.CallOp
 }
 
@@ -247,10 +248,10 @@ func (e *Editor) processKey(gtx layout.Context) {
 					e.events = append(e.events, SubmitEvent{
 						Text: e.Text(),
 					})
-					return
+					continue
 				}
 			}
-			if e.command(ke) {
+			if e.command(gtx, ke) {
 				e.caret.scroll = true
 				e.scroller.Stop()
 			}
@@ -261,6 +262,10 @@ func (e *Editor) processKey(gtx layout.Context) {
 				})
 				return
 			}
+			e.caret.scroll = true
+			e.scroller.Stop()
+			e.append(ke.Text)
+		case clipboard.Event:
 			e.caret.scroll = true
 			e.scroller.Stop()
 			e.append(ke.Text)
@@ -275,7 +280,7 @@ func (e *Editor) moveLines(distance int) {
 	e.moveToLine(e.caret.x+e.caret.xoff, e.caret.line+distance)
 }
 
-func (e *Editor) command(k key.Event) bool {
+func (e *Editor) command(gtx layout.Context, k key.Event) bool {
 	modSkip := key.ModCtrl
 	if runtime.GOOS == "darwin" {
 		modSkip = key.ModAlt
@@ -319,6 +324,16 @@ func (e *Editor) command(k key.Event) bool {
 		e.moveStart()
 	case key.NameEnd:
 		e.moveEnd()
+	case "V":
+		if k.Modifiers != key.ModShortcut {
+			return false
+		}
+		clipboard.ReadOp{Tag: &e.eventKey}.Add(gtx.Ops)
+	case "C":
+		if k.Modifiers != key.ModShortcut {
+			return false
+		}
+		clipboard.WriteOp{Text: e.Text()}.Add(gtx.Ops)
 	default:
 		return false
 	}
@@ -370,7 +385,10 @@ func (e *Editor) Layout(gtx layout.Context, sh text.Shaper, font text.Font, size
 	}
 	e.makeValid()
 
-	return e.layout(gtx)
+	dims := e.layout(gtx)
+	pointer.Rect(image.Rectangle{Max: dims.Size}).Add(gtx.Ops)
+	pointer.CursorNameOp{Name: pointer.CursorText}.Add(gtx.Ops)
+	return dims
 }
 
 func (e *Editor) layout(gtx layout.Context) layout.Dimensions {
@@ -405,7 +423,11 @@ func (e *Editor) layout(gtx layout.Context) layout.Dimensions {
 		e.shapes = append(e.shapes, line{off, path})
 	}
 
-	key.InputOp{Tag: &e.eventKey, Focus: e.requestFocus}.Add(gtx.Ops)
+	key.InputOp{Tag: &e.eventKey}.Add(gtx.Ops)
+	if e.requestFocus {
+		key.FocusOp{Focus: true}.Add(gtx.Ops)
+		key.SoftKeyboardOp{Show: true}.Add(gtx.Ops)
+	}
 	e.requestFocus = false
 	pointerPadding := gtx.Px(unit.Dp(4))
 	r := image.Rectangle{Max: e.viewSize}
@@ -434,12 +456,13 @@ func (e *Editor) layout(gtx layout.Context) layout.Dimensions {
 }
 
 func (e *Editor) PaintText(gtx layout.Context) {
-	clip := textPadding(e.lines)
-	clip.Max = clip.Max.Add(e.viewSize)
+	cl := textPadding(e.lines)
+	cl.Max = cl.Max.Add(e.viewSize)
 	for _, shape := range e.shapes {
 		stack := op.Push(gtx.Ops)
-		op.Offset(shape.offset).Add(gtx.Ops)
+		op.Offset(layout.FPt(shape.offset)).Add(gtx.Ops)
 		shape.clip.Add(gtx.Ops)
+		clip.Rect(cl.Sub(shape.offset)).Add(gtx.Ops)
 		paint.PaintOp{}.Add(gtx.Ops)
 		stack.Pop()
 	}
@@ -647,14 +670,14 @@ func (e *Editor) Insert(s string) {
 }
 
 func (e *Editor) append(s string) {
-	if e.SingleLine {
-		s = strings.ReplaceAll(s, "\n", "")
-	}
 	e.prepend(s)
 	e.rr.caret += len(s)
 }
 
 func (e *Editor) prepend(s string) {
+	if e.SingleLine {
+		s = strings.ReplaceAll(s, "\n", " ")
+	}
 	e.rr.prepend(s)
 	e.caret.xoff = 0
 	e.invalidate()

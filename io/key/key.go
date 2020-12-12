@@ -10,6 +10,7 @@ events.
 package key
 
 import (
+	"fmt"
 	"strings"
 
 	"gioui.org/internal/opconst"
@@ -19,16 +20,22 @@ import (
 
 // InputOp declares a handler ready for key events.
 // Key events are in general only delivered to the
-// focused key handler. Set the Focus flag to request
-// the focus.
+// focused key handler.
 type InputOp struct {
-	Tag   event.Tag
-	Focus bool
+	Tag event.Tag
 }
 
-// HideInputOp request that any on screen text input
-// be hidden.
-type HideInputOp struct{}
+// SoftKeyboardOp shows or hide the on-screen keyboard, if available.
+type SoftKeyboardOp struct {
+	Show bool
+}
+
+// FocusOp sets or clears the keyboard focus.
+type FocusOp struct {
+	// Focus, if set, moves the focus to the current InputOp. If Focus
+	// is false, the focus is cleared.
+	Focus bool
+}
 
 // A FocusEvent is generated when a handler gains or loses
 // focus.
@@ -64,7 +71,7 @@ const (
 	// Release is the state of a key that has been released.
 	//
 	// Note: release events are only implemented on the following platforms:
-	// Linux, Windows, WebAssembly.
+	// macOS, Linux, Windows, WebAssembly.
 	Release
 )
 
@@ -112,16 +119,24 @@ func (m Modifiers) Contain(m2 Modifiers) bool {
 }
 
 func (h InputOp) Add(o *op.Ops) {
-	data := o.Write(opconst.TypeKeyInputLen, h.Tag)
+	data := o.Write1(opconst.TypeKeyInputLen, h.Tag)
 	data[0] = byte(opconst.TypeKeyInput)
-	if h.Focus {
+}
+
+func (h SoftKeyboardOp) Add(o *op.Ops) {
+	data := o.Write(opconst.TypeKeySoftKeyboardLen)
+	data[0] = byte(opconst.TypeKeySoftKeyboard)
+	if h.Show {
 		data[1] = 1
 	}
 }
 
-func (h HideInputOp) Add(o *op.Ops) {
-	data := o.Write(opconst.TypeHideInputLen)
-	data[0] = byte(opconst.TypeHideInput)
+func (h FocusOp) Add(o *op.Ops) {
+	data := o.Write(opconst.TypeKeyFocusLen)
+	data[0] = byte(opconst.TypeKeyFocus)
+	if h.Focus {
+		data[1] = 1
+	}
 }
 
 func (EditEvent) ImplementsEvent()  {}
@@ -129,7 +144,7 @@ func (Event) ImplementsEvent()      {}
 func (FocusEvent) ImplementsEvent() {}
 
 func (e Event) String() string {
-	return "{" + string(e.Name) + " " + e.Modifiers.String() + "}"
+	return fmt.Sprintf("%v %v %v}", e.Name, e.Modifiers, e.State)
 }
 
 func (m Modifiers) String() string {
@@ -150,4 +165,15 @@ func (m Modifiers) String() string {
 		strs = append(strs, "ModSuper")
 	}
 	return strings.Join(strs, "|")
+}
+
+func (s State) String() string {
+	switch s {
+	case Press:
+		return "Press"
+	case Release:
+		return "Release"
+	default:
+		panic("invalid State")
+	}
 }

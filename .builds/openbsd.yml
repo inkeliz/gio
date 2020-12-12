@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Unlicense OR MIT
 image: openbsd/latest
 packages:
  - libxkbcommon
@@ -17,7 +18,4 @@ tasks:
      go test ./...
  - test_cmd: |
      cd gio/cmd
-     go test ./...
- - test_example: |
-     cd gio/example
      go test ./...

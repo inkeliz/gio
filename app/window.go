@@ -10,6 +10,7 @@ import (
 
 	"gioui.org/app/internal/window"
 	"gioui.org/io/event"
+	"gioui.org/io/pointer"
 	"gioui.org/io/profile"
 	"gioui.org/io/router"
 	"gioui.org/io/system"
@@ -47,7 +48,8 @@ type Window struct {
 	nextFrame    time.Time
 	delayedDraw  *time.Timer
 
-	queue queue
+	queue  queue
+	cursor pointer.CursorName
 
 	callbacks callbacks
 }
@@ -167,6 +169,12 @@ func (w *Window) processFrame(frameStart time.Time, size image.Point, frame *op.
 	case router.TextInputClose:
 		w.driver.ShowTextInput(false)
 	}
+	if txt, ok := w.queue.q.WriteClipboard(); ok {
+		go w.WriteClipboard(txt)
+	}
+	if w.queue.q.ReadClipboard() {
+		go w.ReadClipboard()
+	}
 	if w.queue.q.Profiling() {
 		frameDur := time.Since(frameStart)
 		frameDur = frameDur.Truncate(100 * time.Microsecond)
@@ -194,7 +202,7 @@ func (w *Window) Invalidate() {
 }
 
 // ReadClipboard initiates a read of the clipboard in the form
-// of a system.ClipboardEvent. Multiple reads may be coalesced
+// of a clipboard.Event. Multiple reads may be coalesced
 // to a single event.
 func (w *Window) ReadClipboard() {
 	go w.driverDo(func() {
@@ -206,6 +214,13 @@ func (w *Window) ReadClipboard() {
 func (w *Window) WriteClipboard(s string) {
 	go w.driverDo(func() {
 		w.driver.WriteClipboard(s)
+	})
+}
+
+// SetCursorName changes the current window cursor to name.
+func (w *Window) SetCursorName(name pointer.CursorName) {
+	go w.driverDo(func() {
+		w.driver.SetCursor(name)
 	})
 }
 
@@ -399,6 +414,10 @@ func (w *Window) run(opts *window.Options) {
 				if w.queue.q.Add(e2) {
 					w.setNextFrame(time.Time{})
 					w.updateAnimation()
+				}
+				if c := w.queue.q.Cursor(); c != w.cursor {
+					w.cursor = c
+					w.SetCursorName(c)
 				}
 				w.out <- e
 			}

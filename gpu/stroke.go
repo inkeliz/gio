@@ -46,8 +46,20 @@ type strokeState struct {
 
 type strokeQuads []strokeQuad
 
+func (qs *strokeQuads) setContour(n uint32) {
+	for i := range *qs {
+		(*qs)[i].contour = n
+	}
+}
+
 func (qs *strokeQuads) pen() f32.Point {
 	return (*qs)[len(*qs)-1].quad.To
+}
+
+func (qs *strokeQuads) closed() bool {
+	beg := (*qs)[0].quad.From
+	end := (*qs)[len(*qs)-1].quad.To
+	return f32Eq(beg.X, end.X) && f32Eq(beg.Y, end.Y)
 }
 
 func (qs *strokeQuads) lineTo(pt f32.Point) {
@@ -106,14 +118,18 @@ func (qs strokeQuads) split() []strokeQuads {
 	return o
 }
 
-func (qs strokeQuads) stroke(width float32, sty clip.StrokeStyle) strokeQuads {
+func (qs strokeQuads) stroke(stroke clip.StrokeStyle, dashes dashOp) strokeQuads {
+	if !isSolidLine(dashes) {
+		qs = qs.dash(dashes)
+	}
+
 	var (
 		o  strokeQuads
-		hw = 0.5 * width
+		hw = 0.5 * stroke.Width
 	)
 
 	for _, ps := range qs.split() {
-		rhs, lhs := ps.offset(hw, sty)
+		rhs, lhs := ps.offset(hw, stroke)
 		switch lhs {
 		case nil:
 			o = o.append(rhs)
@@ -132,13 +148,14 @@ func (qs strokeQuads) stroke(width float32, sty clip.StrokeStyle) strokeQuads {
 			}
 		}
 	}
+
 	return o
 }
 
 // offset returns the right-hand and left-hand sides of the path, offset by
 // the half-width hw.
-// The stroke style sty handles how segments are joined and ends are capped.
-func (qs strokeQuads) offset(hw float32, sty clip.StrokeStyle) (rhs, lhs strokeQuads) {
+// The stroke handles how segments are joined and ends are capped.
+func (qs strokeQuads) offset(hw float32, stroke clip.StrokeStyle) (rhs, lhs strokeQuads) {
 	var (
 		states []strokeState
 		beg    = qs[0].quad.From
@@ -180,7 +197,7 @@ func (qs strokeQuads) offset(hw float32, sty clip.StrokeStyle) (rhs, lhs strokeQ
 				next = states[0]
 			}
 			if state.n1 != next.n0 {
-				strokePathJoin(sty, &rhs, &lhs, hw, state.p1, state.n1, next.n0, state.r1, next.r0)
+				strokePathJoin(stroke, &rhs, &lhs, hw, state.p1, state.n1, next.n0, state.r1, next.r0)
 			}
 		}
 	}
@@ -196,10 +213,10 @@ func (qs strokeQuads) offset(hw float32, sty clip.StrokeStyle) (rhs, lhs strokeQ
 
 	// Default to counter-clockwise direction.
 	lhs = lhs.reverse()
-	strokePathCap(sty, &rhs, hw, qend.p1, qend.n1)
+	strokePathCap(stroke, &rhs, hw, qend.p1, qend.n1)
 
 	rhs = rhs.append(lhs)
-	strokePathCap(sty, &rhs, hw, qbeg.p0, qbeg.n0.Mul(-1))
+	strokePathCap(stroke, &rhs, hw, qbeg.p0, qbeg.n0.Mul(-1))
 
 	rhs.close()
 
@@ -290,6 +307,10 @@ func normPt(p f32.Point, l float32) f32.Point {
 	return f32.Point{X: p.X * n, Y: p.Y * n}
 }
 
+func lenPt(p f32.Point) float32 {
+	return float32(math.Hypot(float64(p.X), float64(p.Y)))
+}
+
 func dotPt(p, q f32.Point) float32 {
 	return p.X*q.X + p.Y*q.Y
 }
@@ -346,6 +367,29 @@ func quadBezierD1(p0, p1, p2 f32.Point, t float32) f32.Point {
 func quadBezierD2(p0, p1, p2 f32.Point, t float32) f32.Point {
 	p := p2.Sub(p1.Mul(2)).Add(p0)
 	return p.Mul(2)
+}
+
+// quadBezierLen returns the length of the Bézier curve.
+// See:
+//  https://malczak.linuxpl.com/blog/quadratic-bezier-curve-length/
+func quadBezierLen(p0, p1, p2 f32.Point) float32 {
+	a := p0.Sub(p1.Mul(2)).Add(p2)
+	b := p1.Mul(2).Sub(p0.Mul(2))
+	A := float64(4 * dotPt(a, a))
+	B := float64(4 * dotPt(a, b))
+	C := float64(dotPt(b, b))
+	if f64Eq(A, 0.0) {
+		// p1 is in the middle between p0 and p2,
+		// so it is a straight line from p0 to p2.
+		return lenPt(p2.Sub(p0))
+	}
+
+	Sabc := 2 * math.Sqrt(A+B+C)
+	A2 := math.Sqrt(A)
+	A32 := 2 * A * A2
+	C2 := 2 * math.Sqrt(C)
+	BA := B / A2
+	return float32((A32*Sabc + A2*B*(Sabc-C2) + (4*C*A-B*B)*math.Log((2*A2+BA+Sabc)/(BA+C2))) / (4 * A32))
 }
 
 func strokeQuadBezier(state strokeState, d, flatness float32) strokeQuads {
@@ -421,13 +465,13 @@ func quadBezierSplit(p0, p1, p2 f32.Point, t float32) (f32.Point, f32.Point, f32
 }
 
 // strokePathJoin joins the two paths rhs and lhs, according to the provided
-// stroke style sty.
-func strokePathJoin(sty clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32, pivot, n0, n1 f32.Point, r0, r1 float32) {
-	if sty.Miter > 0 {
-		strokePathMiterJoin(sty, rhs, lhs, hw, pivot, n0, n1, r0, r1)
+// stroke operation.
+func strokePathJoin(stroke clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32, pivot, n0, n1 f32.Point, r0, r1 float32) {
+	if stroke.Miter > 0 {
+		strokePathMiterJoin(stroke, rhs, lhs, hw, pivot, n0, n1, r0, r1)
 		return
 	}
-	switch sty.Join {
+	switch stroke.Join {
 	case clip.BevelJoin:
 		strokePathBevelJoin(rhs, lhs, hw, pivot, n0, n1, r0, r1)
 	case clip.RoundJoin:
@@ -468,14 +512,14 @@ func strokePathRoundJoin(rhs, lhs *strokeQuads, hw float32, pivot, n0, n1 f32.Po
 	}
 }
 
-func strokePathMiterJoin(sty clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32, pivot, n0, n1 f32.Point, r0, r1 float32) {
+func strokePathMiterJoin(stroke clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32, pivot, n0, n1 f32.Point, r0, r1 float32) {
 	if n0 == n1.Mul(-1) {
 		strokePathBevelJoin(rhs, lhs, hw, pivot, n0, n1, r0, r1)
 		return
 	}
 
 	// This is to handle nearly linear joints that would be clipped otherwise.
-	limit := math.Max(float64(sty.Miter), 1.001)
+	limit := math.Max(float64(stroke.Miter), 1.001)
 
 	cw := dotPt(rot90CW(n0), n1) >= 0.0
 	if cw {
@@ -489,8 +533,8 @@ func strokePathMiterJoin(sty clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32
 	cos := math.Sqrt(0.5 * (1 + float64(cosPt(n0, n1))))
 	d := hw64 / cos
 	if math.Abs(limit*hw64) < math.Abs(d) {
-		sty.Miter = 0 // Set miter to zero to disable the miter joint.
-		strokePathJoin(sty, rhs, lhs, hw, pivot, n0, n1, r0, r1)
+		stroke.Miter = 0 // Set miter to zero to disable the miter joint.
+		strokePathJoin(stroke, rhs, lhs, hw, pivot, n0, n1, r0, r1)
 		return
 	}
 	mid := pivot.Add(normPt(n0.Add(n1), float32(d)))
@@ -509,9 +553,9 @@ func strokePathMiterJoin(sty clip.StrokeStyle, rhs, lhs *strokeQuads, hw float32
 	lhs.lineTo(lp)
 }
 
-// strokePathCap caps the provided path qs, according to the provided stroke style sty.
-func strokePathCap(sty clip.StrokeStyle, qs *strokeQuads, hw float32, pivot, n0 f32.Point) {
-	switch sty.Cap {
+// strokePathCap caps the provided path qs, according to the provided stroke operation.
+func strokePathCap(stroke clip.StrokeStyle, qs *strokeQuads, hw float32, pivot, n0 f32.Point) {
+	switch stroke.Cap {
 	case clip.FlatCap:
 		strokePathFlatCap(qs, hw, pivot, n0)
 	case clip.SquareCap:

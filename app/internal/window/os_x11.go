@@ -7,8 +7,8 @@ package window
 /*
 #cgo openbsd CFLAGS: -I/usr/X11R6/include -I/usr/local/include
 #cgo openbsd LDFLAGS: -L/usr/X11R6/lib -L/usr/local/lib
-#cgo freebsd openbsd LDFLAGS: -lX11 -lxkbcommon -lxkbcommon-x11 -lX11-xcb
-#cgo linux pkg-config: x11 xkbcommon xkbcommon-x11 x11-xcb
+#cgo freebsd openbsd LDFLAGS: -lX11 -lxkbcommon -lxkbcommon-x11 -lX11-xcb -lXcursor -lXfixes
+#cgo linux pkg-config: x11 xkbcommon xkbcommon-x11 x11-xcb xcursor xfixes
 
 #include <stdlib.h>
 #include <locale.h>
@@ -18,6 +18,8 @@ package window
 #include <X11/Xresource.h>
 #include <X11/XKBlib.h>
 #include <X11/Xlib-xcb.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/Xcursor/Xcursor.h>
 #include <xkbcommon/xkbcommon-x11.h>
 
 */
@@ -34,6 +36,7 @@ import (
 	"unsafe"
 
 	"gioui.org/f32"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/system"
@@ -87,6 +90,7 @@ type x11Window struct {
 		write   *string
 		content []byte
 	}
+	cursor pointer.CursorName
 }
 
 func (w *x11Window) SetAnimating(anim bool) {
@@ -110,6 +114,27 @@ func (w *x11Window) WriteClipboard(s string) {
 	w.clipboard.write = &s
 	w.mu.Unlock()
 	w.wakeup()
+}
+
+func (w *x11Window) SetCursor(name pointer.CursorName) {
+	if name == pointer.CursorNone {
+		w.cursor = name
+		C.XFixesHideCursor(w.x, w.xw)
+		return
+	}
+	if w.cursor == pointer.CursorNone {
+		C.XFixesShowCursor(w.x, w.xw)
+	}
+	cname := C.CString(string(name))
+	defer C.free(unsafe.Pointer(cname))
+	c := C.XcursorLibraryLoadCursor(w.x, cname)
+	if c == 0 {
+		name = pointer.CursorDefault
+	}
+	w.cursor = name
+	// If c if null (i.e. name was not found),
+	// XDefineCursor will use the default cursor.
+	C.XDefineCursor(w.x, w.xw, c)
 }
 
 func (w *x11Window) ShowTextInput(show bool) {}
@@ -346,6 +371,15 @@ func (h *x11EventHandler) handleEvents() bool {
 				// scroll down
 				ev.Type = pointer.Scroll
 				ev.Scroll.Y = +scrollScale
+			case 6:
+				// http://xahlee.info/linux/linux_x11_mouse_button_number.html
+				// scroll left
+				ev.Type = pointer.Scroll
+				ev.Scroll.X = -scrollScale * 2
+			case 7:
+				// scroll right
+				ev.Type = pointer.Scroll
+				ev.Scroll.X = +scrollScale * 2
 			default:
 				continue
 			}
@@ -401,7 +435,7 @@ func (h *x11EventHandler) handleEvents() bool {
 				break
 			}
 			str := C.GoStringN((*C.char)(unsafe.Pointer(text.value)), C.int(text.nitems))
-			w.w.Event(system.ClipboardEvent{Text: str})
+			w.w.Event(clipboard.Event{Text: str})
 		case C.SelectionRequest:
 			cevt := (*C.XSelectionRequestEvent)(unsafe.Pointer(xev))
 			if cevt.selection != w.atoms.clipboard || cevt.property == C.None {
@@ -426,7 +460,7 @@ func (h *x11EventHandler) handleEvents() bool {
 			case w.atoms.targets:
 				// The requestor wants the supported clipboard
 				// formats. First write the targets...
-				formats := []C.long{
+				formats := [...]C.long{
 					C.long(w.atoms.targets),
 					C.long(w.atoms.utf8string),
 					C.long(w.atoms.plaintext),
@@ -435,7 +469,7 @@ func (h *x11EventHandler) handleEvents() bool {
 				}
 				C.XChangeProperty(w.x, cevt.requestor, cevt.property, w.atoms.atom,
 					32 /* bitwidth of formats */, C.PropModeReplace,
-					(*C.uchar)(unsafe.Pointer(&formats[0])), C.int(len(formats)),
+					(*C.uchar)(unsafe.Pointer(&formats)), C.int(len(formats)),
 				)
 				// ...then notify the requestor.
 				notify()

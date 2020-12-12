@@ -22,6 +22,7 @@ import (
 	"gioui.org/unit"
 
 	"gioui.org/f32"
+	"gioui.org/io/clipboard"
 	"gioui.org/io/key"
 	"gioui.org/io/pointer"
 	"gioui.org/io/system"
@@ -45,6 +46,7 @@ type window struct {
 	height      int
 	stage       system.Stage
 	pointerBtns pointer.Buttons
+	cursor      syscall.Handle
 
 	mu        sync.Mutex
 	animating bool
@@ -67,6 +69,9 @@ var backends []gpuAPI
 
 // winMap maps win32 HWNDs to *windows.
 var winMap sync.Map
+
+// iconID is the ID of the icon in the resource file.
+const iconID = 1
 
 var resources struct {
 	once sync.Once
@@ -105,6 +110,9 @@ func NewWindow(window Callbacks, opts *Options) error {
 		windows.ShowWindow(w.hwnd, windows.SW_SHOWDEFAULT)
 		windows.SetForegroundWindow(w.hwnd)
 		windows.SetFocus(w.hwnd)
+		// Since the window class for the cursor is null,
+		// set it here to show the cursor.
+		w.SetCursor(pointer.CursorDefault)
 		if err := w.loop(); err != nil {
 			panic(err)
 		}
@@ -120,17 +128,18 @@ func initResources() error {
 		return err
 	}
 	resources.handle = hInst
-	curs, err := windows.LoadCursor(windows.IDC_ARROW)
+	c, err := windows.LoadCursor(windows.IDC_ARROW)
 	if err != nil {
 		return err
 	}
-	resources.cursor = curs
+	resources.cursor = c
+	icon, _ := windows.LoadImage(hInst, iconID, windows.IMAGE_ICON, 0, 0, windows.LR_DEFAULTSIZE|windows.LR_SHARED)
 	wcls := windows.WndClassEx{
 		CbSize:        uint32(unsafe.Sizeof(windows.WndClassEx{})),
 		Style:         windows.CS_HREDRAW | windows.CS_VREDRAW | windows.CS_OWNDC,
 		LpfnWndProc:   syscall.NewCallback(windowProc),
 		HInstance:     hInst,
-		HCursor:       curs,
+		HIcon:         icon,
 		LpszClassName: syscall.StringToUTF16Ptr("GioWindow"),
 	}
 	cls, err := windows.RegisterClassEx(&wcls)
@@ -271,7 +280,9 @@ func windowProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr
 			Time:     windows.GetMessageTime(),
 		})
 	case windows.WM_MOUSEWHEEL:
-		w.scrollEvent(wParam, lParam)
+		w.scrollEvent(wParam, lParam, false)
+	case windows.WM_MOUSEHWHEEL:
+		w.scrollEvent(wParam, lParam, true)
 	case windows.WM_DESTROY:
 		windows.PostQuitMessage(0)
 	case windows.WM_PAINT:
@@ -297,6 +308,8 @@ func windowProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr
 				Y: w.minmax.maxHeight + w.deltas.height,
 			}
 		}
+	case windows.WM_SETCURSOR:
+		windows.SetCursor(w.cursor)
 	}
 
 	return windows.DefWindowProc(hwnd, msg, wParam, lParam)
@@ -352,7 +365,7 @@ func coordsFromlParam(lParam uintptr) (int, int) {
 	return x, y
 }
 
-func (w *window) scrollEvent(wParam, lParam uintptr) {
+func (w *window) scrollEvent(wParam, lParam uintptr, horizontal bool) {
 	x, y := coordsFromlParam(lParam)
 	// The WM_MOUSEWHEEL coordinates are in screen coordinates, in contrast
 	// to other mouse events.
@@ -360,12 +373,16 @@ func (w *window) scrollEvent(wParam, lParam uintptr) {
 	windows.ScreenToClient(w.hwnd, &np)
 	p := f32.Point{X: float32(np.X), Y: float32(np.Y)}
 	dist := float32(int16(wParam >> 16))
+	sp := f32.Point{Y: -dist}
+	if horizontal {
+		sp.X, sp.Y = sp.Y, sp.X
+	}
 	w.w.Event(pointer.Event{
 		Type:     pointer.Scroll,
 		Source:   pointer.Mouse,
 		Position: p,
 		Buttons:  w.pointerBtns,
-		Scroll:   f32.Point{Y: -dist},
+		Scroll:   sp,
 		Time:     windows.GetMessageTime(),
 	})
 }
@@ -502,7 +519,7 @@ func (w *window) readClipboard() error {
 	hdr.Len = n
 	content := string(utf16.Decode(u16))
 	go func() {
-		w.w.Event(system.ClipboardEvent{Text: content})
+		w.w.Event(clipboard.Event{Text: content})
 	}()
 	return nil
 }
@@ -544,6 +561,37 @@ func (w *window) writeClipboard(s string) error {
 		return err
 	}
 	return nil
+}
+
+func (w *window) SetCursor(name pointer.CursorName) {
+	c, err := loadCursor(name)
+	if err != nil {
+		c = resources.cursor
+	}
+	w.cursor = c
+}
+
+func loadCursor(name pointer.CursorName) (syscall.Handle, error) {
+	var curID uint16
+	switch name {
+	default:
+		fallthrough
+	case pointer.CursorDefault:
+		return resources.cursor, nil
+	case pointer.CursorText:
+		curID = windows.IDC_IBEAM
+	case pointer.CursorPointer:
+		curID = windows.IDC_HAND
+	case pointer.CursorCrossHair:
+		curID = windows.IDC_CROSS
+	case pointer.CursorColResize:
+		curID = windows.IDC_SIZEWE
+	case pointer.CursorRowResize:
+		curID = windows.IDC_SIZENS
+	case pointer.CursorNone:
+		return 0, nil
+	}
+	return windows.LoadCursor(curID)
 }
 
 func (w *window) ShowTextInput(show bool) {}

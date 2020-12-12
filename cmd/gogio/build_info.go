@@ -3,49 +3,52 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
 type buildInfo struct {
-	appID   string
-	archs   []string
-	ldflags string
-	minsdk  int
-	name    string
-	pkgDir  string
-	pkgPath string
-	tags    string
-	target  string
-	version int
+	appID    string
+	archs    []string
+	ldflags  string
+	minsdk   int
+	name     string
+	pkgDir   string
+	pkgPath  string
+	iconPath string
+	tags     string
+	target   string
+	version  int
 }
 
-func newBuildInfo(pkgAbsPath string) (*buildInfo, error) {
-	pkgMetadata, err := getPkgMetadata(pkgAbsPath)
+func newBuildInfo(pkgPath string) (*buildInfo, error) {
+	pkgMetadata, err := getPkgMetadata(pkgPath)
 	if err != nil {
 		return nil, err
 	}
 	appID := getAppID(pkgMetadata)
+	appIcon := filepath.Join(pkgMetadata.Dir, "appicon.png")
+	if *iconPath != "" {
+		appIcon = *iconPath
+	}
 	bi := &buildInfo{
-		appID:   appID,
-		archs:   getArchs(),
-		ldflags: getLdFlags(appID),
-		minsdk:  *minsdk,
-		name:    getPkgName(pkgMetadata),
-		pkgDir:  pkgMetadata.Dir,
-		pkgPath: pkgAbsPath,
-		tags:    *extraTags,
-		target:  *target,
-		version: *version,
+		appID:    appID,
+		archs:    getArchs(),
+		ldflags:  getLdFlags(appID),
+		minsdk:   *minsdk,
+		name:     getPkgName(pkgMetadata),
+		pkgDir:   pkgMetadata.Dir,
+		pkgPath:  pkgPath,
+		iconPath: appIcon,
+		tags:     *extraTags,
+		target:   *target,
+		version:  *version,
 	}
 	return bi, nil
-}
-
-func getPkgAbsPath() string {
-	absPath, _ := filepath.Abs(flag.Arg(0))
-	return absPath
 }
 
 func getArchs() []string {
@@ -60,6 +63,12 @@ func getArchs() []string {
 		return []string{"arm64", "amd64"}
 	case "android":
 		return []string{"arm", "arm64", "386", "amd64"}
+	case "windows":
+		goarch := os.Getenv("GOARCH")
+		if goarch == "" {
+			goarch = runtime.GOARCH
+		}
+		return []string{goarch}
 	default:
 		// TODO: Add flag tests.
 		panic("The target value has already been validated, this will never execute.")
@@ -88,12 +97,12 @@ type packageMetadata struct {
 	Dir     string
 }
 
-func getPkgMetadata(absPath string) (*packageMetadata, error) {
-	pkgImportPath, err := runCmd(exec.Command("go", "list", "-f", "{{.ImportPath}}", absPath))
+func getPkgMetadata(pkgPath string) (*packageMetadata, error) {
+	pkgImportPath, err := runCmd(exec.Command("go", "list", "-f", "{{.ImportPath}}", pkgPath))
 	if err != nil {
 		return nil, err
 	}
-	pkgDir, err := runCmd(exec.Command("go", "list", "-f", "{{.Dir}}", absPath))
+	pkgDir, err := runCmd(exec.Command("go", "list", "-f", "{{.Dir}}", pkgPath))
 	if err != nil {
 		return nil, err
 	}

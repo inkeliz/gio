@@ -36,7 +36,10 @@ func (rr RRect) Op(ops *op.Ops) Op {
 	p.Begin(ops)
 	p.Move(rr.Rect.Min)
 	roundRect(&p, rr.Rect.Size(), rr.SE, rr.SW, rr.NW, rr.NE)
-	return p.Outline()
+
+	return Outline{
+		Path: p.End(),
+	}.Op()
 }
 
 // Add the rectangle clip.
@@ -47,9 +50,9 @@ func (rr RRect) Add(ops *op.Ops) {
 // Border represents the clip area of a rectangular border.
 type Border struct {
 	// Rect is the bounds of the border.
-	Rect  f32.Rectangle
-	Width float32
-	Style StrokeStyle
+	Rect   f32.Rectangle
+	Width  float32
+	Dashes DashSpec
 	// The corner radii.
 	SE, SW, NW, NE float32
 }
@@ -58,11 +61,16 @@ type Border struct {
 func (b Border) Op(ops *op.Ops) Op {
 	var p Path
 	p.Begin(ops)
-
 	p.Move(b.Rect.Min)
 	roundRect(&p, b.Rect.Size(), b.SE, b.SW, b.NW, b.NE)
 
-	return p.Stroke(b.Width, b.Style)
+	return Stroke{
+		Path: p.End(),
+		Style: StrokeStyle{
+			Width: b.Width,
+		},
+		Dashes: b.Dashes,
+	}.Op()
 }
 
 // Add the border clip.

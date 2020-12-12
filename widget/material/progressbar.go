@@ -15,14 +15,16 @@ import (
 )
 
 type ProgressBarStyle struct {
-	Color    color.NRGBA
-	Progress int
+	Color      color.NRGBA
+	TrackColor color.NRGBA
+	Progress   float32
 }
 
-func ProgressBar(th *Theme, progress int) ProgressBarStyle {
+func ProgressBar(th *Theme, progress float32) ProgressBarStyle {
 	return ProgressBarStyle{
-		Progress: progress,
-		Color:    th.Color.Primary,
+		Progress:   progress,
+		Color:      th.Palette.ContrastBg,
+		TrackColor: f32color.MulAlpha(th.Palette.Fg, 0x88),
 	}
 }
 
@@ -44,24 +46,13 @@ func (p ProgressBarStyle) Layout(gtx layout.Context) layout.Dimensions {
 		return layout.Dimensions{Size: d}
 	}
 
-	progress := p.Progress
-	if progress > 100 {
-		progress = 100
-	} else if progress < 0 {
-		progress = 0
-	}
-
 	progressBarWidth := float32(gtx.Constraints.Max.X)
-
 	return layout.Stack{Alignment: layout.W}.Layout(gtx,
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			// Use a transparent equivalent of progress color.
-			bgCol := f32color.MulAlpha(p.Color, 150)
-
-			return shader(progressBarWidth, bgCol)
+			return shader(progressBarWidth, p.TrackColor)
 		}),
 		layout.Stacked(func(gtx layout.Context) layout.Dimensions {
-			fillWidth := (progressBarWidth / 100) * float32(progress)
+			fillWidth := progressBarWidth * clamp1(p.Progress)
 			fillColor := p.Color
 			if gtx.Queue == nil {
 				fillColor = f32color.MulAlpha(fillColor, 200)
@@ -69,4 +60,15 @@ func (p ProgressBarStyle) Layout(gtx layout.Context) layout.Dimensions {
 			return shader(fillWidth, fillColor)
 		}),
 	)
+}
+
+// clamp1 limits v to range [0..1].
+func clamp1(v float32) float32 {
+	if v >= 1 {
+		return 1
+	} else if v <= 0 {
+		return 0
+	} else {
+		return v
+	}
 }
