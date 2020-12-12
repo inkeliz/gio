@@ -1,4 +1,4 @@
-module gioui.org
+module git.sr.ht/~inkeliz/gio
 
 go 1.14
 
