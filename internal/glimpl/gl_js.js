@@ -112,14 +112,19 @@
             const context = gioLoadJSValue(sp);
             let error = 0
             if (typeof window.WebGL2RenderingContext !== "undefined" && context instanceof window.WebGL2RenderingContext) {
-                if (context.getExtension("EXT_color_buffer_half_float") === null && context.getExtension("EXT_color_buffer_float") === null) {
+                const ext1 = context.getExtension("EXT_color_buffer_half_float");
+                const ext2 = context.getExtension("EXT_color_buffer_float");
+                if (ext1 === null && ext2 === null) {
                     error = 1;
                 }
             } else {
-                if (context.getExtension("OES_texture_half_float") === null && context.getExtension("OES_texture_float") === null) {
+                const ext1 = context.getExtension("OES_texture_half_float");
+                const ext2 = context.getExtension("OES_texture_float");
+                const ext3 = context.getExtension("EXT_sRGB");
+                if (ext1 === null && ext2 === null) {
                     error = 2;
                 }
-                if (context.getExtension("EXT_sRGB") === null) {
+                if (ext3 === null) {
                     error = 3;
                 }
             }
