@@ -104,7 +104,7 @@ func (d *JSTestDriver) Start(path string) {
 
 	if err := chromedp.Run(ctx,
 		chromedp.EmulateViewport(int64(d.width), int64(d.height)),
-		chromedp.Navigate(ts.URL),
+		chromedp.Navigate(ts.URL+"/index.html"),
 	); err != nil {
 		d.Fatal(err)
 	}

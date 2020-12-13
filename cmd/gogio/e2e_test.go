@@ -270,6 +270,8 @@ func (d *driverBase) waitForFrame() {
 				line := scanner.Text()
 				if strings.Contains(line, "gio frame ready") {
 					d.frameNotifs <- true
+				} else {
+					fmt.Println(line)
 				}
 			}
 			// Since we're only interested in the output while the
