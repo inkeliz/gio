@@ -65,9 +65,26 @@
             return;
         }
 
-        if (v === undefined) {
-            go.mem.setFloat64(addr, 0, true);
-            return;
+        switch (v) {
+            case undefined:
+                // valueUndefined
+                go.mem.setFloat64(addr, 0, true);
+                return;
+            case null:
+                // valueNull
+                go.mem.setUint32(addr + 4, nanHead, true);
+                go.mem.setUint32(addr, 2, true);
+                return;
+            case true:
+                // valueTrue
+                go.mem.setUint32(addr + 4, nanHead, true);
+                go.mem.setUint32(addr, 3, true);
+                return;
+            case false:
+                // valueFalse
+                go.mem.setUint32(addr + 4, nanHead, true);
+                go.mem.setUint32(addr, 4, true);
+                return;
         }
 
         let id = go._ids.get(v);
@@ -86,17 +103,8 @@
             case "object":
                 if (v !== null) {
                     typeFlag = 1;
-                } else {
-                    id = 2; // valueNull
                 }
                 break;
-            case "boolean":
-                if (v === true) {
-                    id = 3; // valueTrue
-                } else {
-                    id = 4; // valueFalse
-                }
-                break
             case "string":
                 typeFlag = 2;
                 break;
@@ -634,10 +642,7 @@
                 gioLoadJSValue(sp),
                 gioLoadInt64(sp + OffsetJSValue),
             );
-            console.log("old sp", sp)
             sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
-            console.log("new sp", sp)
-            console.log("shader val", result)
             gioSetJSValue(sp + OffsetJSValue + OffsetInt64, result);
         },
         // getShaderInfoLog(s Shader) uint64
