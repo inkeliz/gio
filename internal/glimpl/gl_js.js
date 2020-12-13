@@ -52,11 +52,12 @@
     }
 
     const gioSetJSValue = (addr, v) => {
+        const nanHead = 0x7FF80000;
         addr += 8
 
         if (typeof v === "number" && v !== 0) {
             if (isNaN(v)) {
-                go.mem.setUint32(addr + 4, 0x7FF80000, true);
+                go.mem.setUint32(addr + 4, nanHead, true);
                 go.mem.setUint32(addr, 0, true);
                 return;
             }
@@ -85,8 +86,17 @@
             case "object":
                 if (v !== null) {
                     typeFlag = 1;
+                } else {
+                    id = 2; // valueNull
                 }
                 break;
+            case "boolean":
+                if (v === true) {
+                    id = 3; // valueTrue
+                } else {
+                    id = 4; // valueFalse
+                }
+                break
             case "string":
                 typeFlag = 2;
                 break;
@@ -97,7 +107,7 @@
                 typeFlag = 4;
                 break;
         }
-        go.mem.setUint32(addr + 4, 0x7FF80000 | typeFlag, true);
+        go.mem.setUint32(addr + 4, nanHead | typeFlag, true);
         go.mem.setUint32(addr, id, true);
     }
     const gioSetInt32Value = (addr, v) => {
@@ -112,14 +122,19 @@
             const context = gioLoadJSValue(sp);
             let error = 0
             if (typeof window.WebGL2RenderingContext !== "undefined" && context instanceof window.WebGL2RenderingContext) {
-                if (context.getExtension("EXT_color_buffer_half_float") === null && context.getExtension("EXT_color_buffer_float") === null) {
+                const ext1 = context.getExtension("EXT_color_buffer_half_float");
+                const ext2 = context.getExtension("EXT_color_buffer_float");
+                if (ext1 === null && ext2 === null) {
                     error = 1;
                 }
             } else {
-                if (context.getExtension("OES_texture_half_float") === null && context.getExtension("OES_texture_float") === null) {
+                const ext1 = context.getExtension("OES_texture_half_float");
+                const ext2 = context.getExtension("OES_texture_float");
+                const ext3 = context.getExtension("EXT_sRGB");
+                if (ext1 === null && ext2 === null) {
                     error = 2;
                 }
-                if (context.getExtension("EXT_sRGB") === null) {
+                if (ext3 === null) {
                     error = 3;
                 }
             }
@@ -130,6 +145,7 @@
                 EXT_disjoint_timer_query_webgl2: context.getExtension("EXT_disjoint_timer_query_webgl2"),
             });
 
+            sp = (go._inst.exports.getsp() >>> 0);
             gioSetInt32Value(sp + OffsetJSValue, error);
             gioSetInt32Value(sp + 4 + OffsetJSValue, ref - 1);
         },
@@ -256,7 +272,8 @@
             const result = webgl.ctx.checkFramebufferStatus(
                 gioLoadInt64(sp),
             );
-            gioSetJSValue(sp + OffsetInt64, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetInt64, result);
         },
         // clear(mask Enum)
         "gioui.org/internal/glimpl.clear": (sp) => {
@@ -298,35 +315,40 @@
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createBuffer();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // createFramebuffer() uint64
         "gioui.org/internal/glimpl.createFramebuffer": (sp) => {
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createFramebuffer();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // createProgram() uint64
         "gioui.org/internal/glimpl.createProgram": (sp) => {
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createProgram();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // createQuery() uint64
         "gioui.org/internal/glimpl.createQuery": (sp) => {
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createQuery();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // createRenderbuffer() uint64
         "gioui.org/internal/glimpl.createRenderbuffer": (sp) => {
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createRenderbuffer();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // createShaders(ty Enum) uint64
         "gioui.org/internal/glimpl.createShaders": (sp) => {
@@ -335,14 +357,16 @@
             const result = webgl.ctx.createShader(
                 gioLoadInt64(sp),
             );
-            gioSetJSValue(sp + OffsetInt64, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetInt64, result);
         },
         // createTexture() uint64
         "gioui.org/internal/glimpl.createTexture": (sp) => {
             sp = (sp >>> 0) + OffsetContextIndex;
             const webgl = gioLoadContext(sp);
             const result = webgl.ctx.createTexture();
-            gioSetJSValue(sp, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp, result);
         },
         // deleteBuffer(v Buffer)
         "gioui.org/internal/glimpl.deleteBuffer": (sp) => {
@@ -456,7 +480,7 @@
                 gioLoadInt64(sp),
                 gioLoadInt64(sp + OffsetInt64),
                 gioLoadInt64(sp + (OffsetInt64 * 2)),
-                gioLoadInt64(sp + (OffsetInt64 * 3))
+                gioLoadInt64(sp + (OffsetInt64 * 3)),
             )
         },
         // enable(cap Enum)
@@ -526,7 +550,8 @@
                 gioLoadInt64(sp),
                 gioLoadInt64(sp + OffsetInt64),
             );
-            gioSetJSValue(sp + (OffsetInt64 * 2), result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + (OffsetInt64 * 2), result);
         },
         // getFramebufferAttachmentParameteri(target, attachment, pname Enum) uint64
         "gioui.org/internal/glimpl.getFramebufferAttachmentParameteri": (sp) => {
@@ -537,7 +562,8 @@
                 gioLoadInt64(sp + OffsetInt64),
                 gioLoadInt64(sp + (OffsetInt64 * 2)),
             );
-            gioSetJSValue(sp + (OffsetInt64 * 3), result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + (OffsetInt64 * 3), result);
         },
         // getBinding(pname Enum) uint64
         "gioui.org/internal/glimpl.getBinding": (sp) => {
@@ -546,7 +572,8 @@
             const result = webgl.ctx.getParameter(
                 gioLoadInt64(sp),
             );
-            gioSetJSValue(sp + OffsetInt64, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetInt64, result);
         },
         // getInteger(pname Enum) uint64
         "gioui.org/internal/glimpl.getInteger": (sp) => {
@@ -555,7 +582,8 @@
             const result = webgl.ctx.getParameter(
                 gioLoadInt64(sp),
             );
-            gioSetJSValue(sp + OffsetInt64, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetInt64, result);
         },
         // getProgrami(p Program, pname Enum) uint64
         "gioui.org/internal/glimpl.getProgrami": (sp) => {
@@ -565,7 +593,8 @@
                 gioLoadJSValue(sp),
                 gioLoadInt64(sp + OffsetJSValue)
             );
-            gioSetJSValue(sp + OffsetJSValue + OffsetInt64, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetJSValue + OffsetInt64, result);
         },
         // getProgramInfoLog(p Program) uint64
         "gioui.org/internal/glimpl.getProgramInfoLog": (sp) => {
@@ -574,7 +603,8 @@
             const result = webgl.ctx.getProgramInfoLog(
                 gioLoadJSValue(sp),
             );
-            gioSetJSValue(sp + OffsetJSValue, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetJSValue, result);
         },
         // getQueryObjectuiv(query Query, pname Enum) uint64
         "gioui.org/internal/glimpl.getQueryObjectuiv": (sp) => {
@@ -593,6 +623,7 @@
                 );
             }
 
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
             gioSetJSValue(sp + OffsetInt64 + OffsetJSValue, result);
         },
         // getShaderi(s Shader, pname Enum) uint
@@ -603,7 +634,11 @@
                 gioLoadJSValue(sp),
                 gioLoadInt64(sp + OffsetJSValue),
             );
-            gioSetJSValue(sp + OffsetJSValue + OffsetInt64, result)
+            console.log("old sp", sp)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            console.log("new sp", sp)
+            console.log("shader val", result)
+            gioSetJSValue(sp + OffsetJSValue + OffsetInt64, result);
         },
         // getShaderInfoLog(s Shader) uint64
         "gioui.org/internal/glimpl.getShaderInfoLog": (sp) => {
@@ -612,6 +647,7 @@
             const result = webgl.ctx.getShaderInfoLog(
                 gioLoadJSValue(sp),
             );
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
             gioSetJSValue(sp + OffsetJSValue, result)
         },
         // getString(method int, pname Enum) uint64
@@ -624,6 +660,7 @@
             } else {
                 result = webgl.ctx.getParameter(gioLoadInt64(sp + OffsetInt64));
             }
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
             gioSetJSValue(sp + (OffsetInt64 * 2), result);
         },
         // getUniformBlockIndex(p Program, name string) uint64
@@ -634,7 +671,8 @@
                 gioLoadJSValue(sp),
                 gioLoadString(sp + OffsetJSValue),
             )
-            gioSetJSValue(sp + OffsetJSValue + OffsetString, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetJSValue + OffsetString, result);
         },
         // getUniformLocation(p Program, name string) uint64
         "gioui.org/internal/glimpl.getUniformLocation": (sp) => {
@@ -644,7 +682,8 @@
                 gioLoadJSValue(sp),
                 gioLoadString(sp + OffsetJSValue),
             )
-            gioSetJSValue(sp + OffsetJSValue + OffsetString, result)
+            sp = (go._inst.exports.getsp() >>> 0) + OffsetContextIndex;
+            gioSetJSValue(sp + OffsetJSValue + OffsetString, result);
         },
         // invalidateFramebuffer(target, attachment Enum)
         "gioui.org/internal/glimpl.invalidateFramebuffer": (sp) => {

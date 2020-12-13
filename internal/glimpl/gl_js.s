@@ -290,9 +290,3 @@ TEXT ·vertexAttribPointer(SB), NOSPLIT, $0
 TEXT ·viewport(SB), NOSPLIT, $0
   CallImport
   RET
-
-TEXT wasm_export_test(SB),NOSPLIT,$0
-    I32Const $0
-    Call glimpl·test(SB)
-
-    Return
