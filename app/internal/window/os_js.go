@@ -281,6 +281,10 @@ func (w *window) keyEvent(e js.Value, ks key.State) {
 // KeyEvent.
 func modifiersFor(e js.Value) key.Modifiers {
 	var mods key.Modifiers
+	if e.Get("getModifierState").IsUndefined() {
+		// Safari 11.1 doesn't support that feature.
+		return mods
+	}
 	if e.Call("getModifierState", "Alt").Bool() {
 		mods |= key.ModAlt
 	}
