@@ -23,7 +23,7 @@ func buildJS(bi *buildInfo) error {
 		return err
 	}
 	cmd := exec.Command(
-		"go",
+		"go1.16beta1",
 		"build",
 		"-ldflags="+bi.ldflags,
 		"-tags="+bi.tags,
@@ -42,7 +42,7 @@ func buildJS(bi *buildInfo) error {
 	if err := ioutil.WriteFile(filepath.Join(out, "index.html"), []byte(jsIndex), 0600); err != nil {
 		return err
 	}
-	goroot, err := runCmd(exec.Command("go", "env", "GOROOT"))
+	goroot, err := runCmd(exec.Command("go1.16beta1", "env", "GOROOT"))
 	if err != nil {
 		return err
 	}
