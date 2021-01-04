@@ -4,20 +4,22 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"image"
+	"github.com/akavel/rsrc/binutil"
+	"github.com/akavel/rsrc/coff"
 	"image/png"
 	"io"
 	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"text/template"
 )
 
 func buildWindows(tmpDir string, bi *buildInfo) error {
-	builder := &windowsBuilder{TempDir: tmpDir, BuildInfo: bi}
+	builder := &windowsBuilder{TempDir: tmpDir, Coff: coff.NewRSRC()}
 	builder.DestDir = *destPath
 	if builder.DestDir == "" {
 		builder.DestDir = bi.pkgPath
@@ -40,29 +42,32 @@ func buildWindows(tmpDir string, bi *buildInfo) error {
 		return fmt.Errorf("version (%d) is larger than the maximum (%d)", bi.version, math.MaxUint16)
 	}
 
-	builder.Resources.Name = name
-	builder.Manifest.Name = name
-	builder.Manifest.WindowsVersion = sdk
-	builder.Resources.Version = "1,0,0," + version
-	builder.Manifest.Version = "1.0.0." + version
-
-	if err := builder.createIcon(); err != nil {
+	if err := builder.embedIcon(bi.iconPath); err != nil {
 		return err
 	}
 
-	if err := builder.createManifest(); err != nil {
+	if err := builder.embedManifest(windowsManifest{
+		Version:        "1.0.0." + version,
+		WindowsVersion: sdk,
+		Name:           name,
+	}); err != nil {
 		return fmt.Errorf("can't create manifest: %v", err)
 	}
-	if err := builder.createResource(); err != nil {
-		return fmt.Errorf("can't create resource: %v", err)
+
+	if err := builder.embedInfo(windowsResources{
+		Version:      [2]uint32{uint32(1) << 16, uint32(bi.version)},
+		VersionHuman: "1.0.0." + version,
+		Name:         name,
+	}); err != nil {
+		return fmt.Errorf("can't create info: %v", err)
 	}
 
-	if err := builder.buildResource(); err != nil {
+	if err := builder.buildResource(bi); err != nil {
 		return fmt.Errorf("can't build the resources: %v", err)
 	}
 
-	for _, arch := range builder.BuildInfo.archs {
-		if err := builder.buildProgram(arch); err != nil {
+	for _, arch := range bi.archs {
+		if err := builder.buildProgram(bi, name, arch); err != nil {
 			return err
 		}
 	}
@@ -72,157 +77,43 @@ func buildWindows(tmpDir string, bi *buildInfo) error {
 
 type (
 	windowsResources struct {
-		IconPath     string
-		ManifestPath string
-		Version      string
+		Version      [2]uint32
+		VersionHuman string
 		Name         string
-		CompanyName  string
 	}
 	windowsManifest struct {
 		Version        string
 		WindowsVersion int
 		Name           string
-		Arch           string
 	}
-	windowsFiles struct {
-		Resources     windowsResources
-		ResourcesPath string
-		Manifest      windowsManifest
+	windowsBuilder struct {
+		TempDir string
+		DestDir string
+		Coff    *coff.Coff
 	}
 )
 
-type windowsBuilder struct {
-	TempDir   string
-	DestDir   string
-	BuildInfo *buildInfo
-	windowsFiles
+type bufferCoff struct {
+	bytes.Buffer
 }
 
-func (b *windowsBuilder) createIcon() (err error) {
-	if _, err := os.Stat(b.BuildInfo.iconPath); err != nil {
-		return nil
-	}
-
-	iconFile, err := os.Open(b.BuildInfo.iconPath)
-	if err != nil {
-		return fmt.Errorf("can't read the icon located at %s: %v", b.BuildInfo.iconPath, err)
-	}
-	defer iconFile.Close()
-
-	iconImage, err := png.Decode(iconFile)
-	if err != nil {
-		return fmt.Errorf("can't decode the PNG file (%s): %v", b.BuildInfo.iconPath, err)
-	}
-
-	b.Resources.IconPath = filepath.Join(b.TempDir, "appicon.ico")
-	exeIcon, err := os.Create(b.Resources.IconPath)
-	if err != nil {
-		return fmt.Errorf("impossibe to create icon file at %s: %v", b.Resources.IconPath, err)
-	}
-	defer exeIcon.Close()
-
-	return convertPNGtoICO(exeIcon, iconImage)
+func (b *bufferCoff) Size() int64 {
+	return int64(b.Len())
 }
 
-func convertPNGtoICO(w io.Writer, img image.Image) error {
-	// The file must be in .ICO format.
-	const (
-		OffsetICONDIR      int = 2 * 3
-		OffsetICONDIRENTRY int = (4 * 1) + (2 * 2) + (4 * 2)
-	)
-
-	sizes := []int{16, 32, 48, 64, 128, 256}
-
-	// ICONDIR structure
-	if err := binary.Write(w, binary.LittleEndian, [3]uint16{0, 1, uint16(len(sizes))}); err != nil {
-		return err
-	}
-
-	var (
-		headerOffset = OffsetICONDIR + (OffsetICONDIRENTRY * len(sizes))
-		imageBuffer  bytes.Buffer
-	)
-	for _, size := range sizes {
-		imageOffset := imageBuffer.Len()
-		scaledImage := resizeIcon(iconVariant{size: size, fill: false}, img)
-
-		if err := png.Encode(&imageBuffer, scaledImage); err != nil {
-			return fmt.Errorf("can't encode image: %v", err)
-		}
-
-		// ICONDIRENTRY 0-3 structure.
-		// The width/height is defined from 0 to 255 (uint8). But "0" means 256px.
-		if err := binary.Write(w, binary.LittleEndian, [4]uint8{uint8(size % 256), uint8(size % 256), 0, 0}); err != nil {
-			return err
-		}
-		// ICONDIRENTRY 4-6 structure
-		if err := binary.Write(w, binary.LittleEndian, [2]uint16{1, 32}); err != nil {
-			return err
-		}
-		// ICONDIRENTRY 8-12 structure
-		if err := binary.Write(w, binary.LittleEndian, [2]uint32{uint32(imageBuffer.Len() - imageOffset), uint32(headerOffset + imageOffset)}); err != nil {
-			return err
-		}
-	}
-
-	_, err := io.Copy(w, &imageBuffer)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (b *windowsBuilder) createManifest() error {
-	// The manifest have some information about the executable itself,
-	// such as the supported Windows and Execution Level/Permissions.
-	b.Resources.ManifestPath = filepath.Join(b.TempDir, "manifest_windows.xml")
-	manifest, err := os.Create(b.Resources.ManifestPath)
-	if err != nil {
-		return err
-	}
-	defer manifest.Close()
-
-	return b.Manifest.encode(manifest)
-}
-
-func (b *windowsBuilder) createResource() error {
-	// The resource includes the icon and manifest previously created
-	// it also defines the version and some other information about the
-	// program and the developer.
-	b.ResourcesPath = filepath.Join(b.TempDir, "main_windows.rc")
-	resources, err := os.Create(b.ResourcesPath)
-	if err != nil {
-		return err
-	}
-	defer resources.Close()
-
-	return b.Resources.encode(resources)
-}
-
-func (b *windowsBuilder) buildResource() error {
-	cmd := exec.Command(
-		"windres",
-		b.ResourcesPath,
-		filepath.Join(b.BuildInfo.pkgPath, "main_windows.syso"),
-	)
-	_, err := runCmd(cmd)
-	return err
-}
-
-func (b *windowsBuilder) buildProgram(arch string) error {
+func (b *windowsBuilder) buildProgram(buildInfo *buildInfo, name string, arch string) error {
 	dest := b.DestDir
-	if len(b.BuildInfo.archs) > 1 {
-		dest = filepath.Join(filepath.Dir(b.DestDir), b.Resources.Name+"_"+arch+".exe")
+	if len(buildInfo.archs) > 1 {
+		dest = filepath.Join(filepath.Dir(b.DestDir), name+"_"+arch+".exe")
 	}
 
 	cmd := exec.Command(
 		"go",
 		"build",
-		"-ldflags=-H=windowsgui "+b.BuildInfo.ldflags,
-		"-tags="+b.BuildInfo.tags,
+		"-ldflags=-H=windowsgui "+buildInfo.ldflags,
+		"-tags="+buildInfo.tags,
 		"-o", dest,
-		b.BuildInfo.pkgPath,
+		buildInfo.pkgPath,
 	)
 	cmd.Env = append(
 		os.Environ(),
@@ -233,8 +124,90 @@ func (b *windowsBuilder) buildProgram(arch string) error {
 	return err
 }
 
-func (f *windowsManifest) encode(w io.Writer) error {
-	t := `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+func (b *windowsBuilder) buildResource(buildInfo *buildInfo) error {
+	out, err := os.Create(filepath.Join(buildInfo.pkgPath, "main_windows.syso"))
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	b.Coff.Freeze()
+
+	// See https://github.com/akavel/rsrc/internal/write.go#L13.
+	w := binutil.Writer{W: out}
+	binutil.Walk(b.Coff, func(v reflect.Value, path string) error {
+		if binutil.Plain(v.Kind()) {
+			w.WriteLE(v.Interface())
+			return nil
+		}
+		vv, ok := v.Interface().(binutil.SizedReader)
+		if ok {
+			w.WriteFromSized(vv)
+			return binutil.WALK_SKIP
+		}
+		return nil
+	})
+
+	if w.Err != nil {
+		return fmt.Errorf("error writing output file: %s", w.Err)
+	}
+
+	return nil
+}
+
+func (b *windowsBuilder) embedIcon(path string) (err error) {
+	iconFile, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("can't read the icon located at %s: %v", path, err)
+	}
+	defer iconFile.Close()
+
+	iconImage, err := png.Decode(iconFile)
+	if err != nil {
+		return fmt.Errorf("can't decode the PNG file (%s): %v", path, err)
+	}
+
+	var sizes = []int{16, 32, 48, 64, 128, 256}
+	var iconHeader bufferCoff
+
+	// GRPICONDIR structure.
+	if err = binary.Write(&iconHeader, binary.LittleEndian, [3]uint16{0, 1, uint16(len(sizes))}); err != nil {
+		return err
+	}
+
+	for _, size := range sizes {
+		var iconBuffer bufferCoff
+
+		if err = png.Encode(&iconBuffer, resizeIcon(iconVariant{size: size, fill: false}, iconImage)); err != nil {
+			return fmt.Errorf("can't encode image: %v", err)
+		}
+
+		b.Coff.AddResource(coff.RT_ICON, uint16(size), &iconBuffer)
+
+		if err = binary.Write(&iconHeader, binary.LittleEndian, struct {
+			Size     [2]uint8
+			Color    [2]uint8
+			Planes   uint16
+			BitCount uint16
+			Length   uint32
+			Id       uint16
+		}{
+			Size:     [2]uint8{uint8(size % 256), uint8(size % 256)}, // "0" means 256px.
+			Planes:   1,
+			BitCount: 32,
+			Length:   uint32(iconBuffer.Len()),
+			Id:       uint16(size),
+		}); err != nil {
+			return err
+		}
+	}
+
+	b.Coff.AddResource(coff.RT_GROUP_ICON, 1, &iconHeader)
+
+	return nil
+}
+
+func (b *windowsBuilder) embedManifest(v windowsManifest) error {
+	t, err := template.New("manifest").Parse(`<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1" xmlns:asmv3="urn:schemas-microsoft-com:asm.v3">
     <assemblyIdentity type="win32" name="{{.Name}}" version="{{.Version}}" />
     <description>{{.Name}}</description>
@@ -264,53 +237,156 @@ func (f *windowsManifest) encode(w io.Writer) error {
 			<dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true</dpiAware>
 		</asmv3:windowsSettings>
 	</asmv3:application>
-</assembly>`
-	template, err := template.New("manifest").Parse(t)
+</assembly>`)
 	if err != nil {
 		return err
 	}
 
-	return template.Execute(w, f)
+	var manifest bufferCoff
+	if err := t.Execute(&manifest, v); err != nil {
+		return err
+	}
+
+	b.Coff.AddResource(coff.RT_MANIFEST, 1, &manifest)
+
+	return nil
 }
 
-func (f *windowsResources) encode(w io.Writer) error {
-	const t = `{{if .IconPath}}#define IDI_ICON1 1
-IDI_ICON1 ICON "{{escapePath .IconPath}}"{{end}}
+func (b *windowsBuilder) embedInfo(v windowsResources) error {
+	// https://docs.microsoft.com/pt-br/windows/win32/menurc/vs-versioninfo
+	t := newValue(valueBinary, "VS_VERSION_INFO", []io.WriterTo{
+		// https://docs.microsoft.com/pt-br/windows/win32/api/VerRsrc/ns-verrsrc-vs_fixedfileinfo
+		windowsInfoValueFixed{
+			Signature:      0xFEEF04BD,
+			StructVersion:  0x00010000,
+			FileVersion:    v.Version,
+			ProductVersion: v.Version,
+			FileFlagMask:   0X3F,
+			FileFlags:      0,
+			FileOS:         0X40004,
+			FileType:       0X1,
+			FileSubType:    0,
+			FileDate:       [2]uint32{},
+		},
+		// https://docs.microsoft.com/pt-br/windows/win32/menurc/stringfileinfo
+		newValue(valueText, "StringFileInfo", []io.WriterTo{
+			// https://docs.microsoft.com/pt-br/windows/win32/menurc/stringtable
+			newValue(valueText, "04000400", []io.WriterTo{
+				// https://docs.microsoft.com/pt-br/windows/win32/menurc/string-str
+				newValue(valueText, "ProductVersion", v.VersionHuman),
+				newValue(valueText, "FileVersion", v.VersionHuman),
+				newValue(valueText, "FileDescription", v.Name),
+				newValue(valueText, "ProductName", v.Name),
+				// @TODO include more data: gogio must have some way to provide such information (like Company Name, Copyright...)
+			}),
+		}),
+		// https://docs.microsoft.com/pt-br/windows/win32/menurc/varfileinfo
+		newValue(valueBinary, "VarFileInfo", []io.WriterTo{
+			// https://docs.microsoft.com/pt-br/windows/win32/menurc/var-str
+			newValue(valueBinary, "Translation", uint32(0x04000400)),
+		}),
+	})
 
-#define IDI_MANIFEST 1
-IDI_MANIFEST 24 "{{escapePath .ManifestPath}}"
+	// For some reason the ValueLength of the VS_VERSIONINFO must be the length of the `windowsInfoValueFixed`:
+	t.ValueLength = 52
 
-#define IDI_VERSION 1
-IDI_VERSION VERSIONINFO
-FILEVERSION     {{.Version}}
-PRODUCTVERSION  {{.Version}}
-FILEFLAGSMASK   0X3FL
-FILEFLAGS       0x0L
-FILEOS          0X40004L
-FILETYPE        0X1L
-FILESUBTYPE     0x0L
-BEGIN
-    BLOCK "StringFileInfo"
-    BEGIN
-        BLOCK "04000400"
-        BEGIN
-            VALUE "ProductVersion", "{{.Version}}"
-            VALUE "FileVersion", "{{.Version}}"
-            VALUE "FileDescription", "{{.Name}}"
-            VALUE "ProductName", "{{.Name}}"
-        END
-    END
-    BLOCK "VarFileInfo"
-    BEGIN
-            VALUE "Translation", 0x0400, 0x0400
-    END
-END`
-	template, err := template.New("rc").Funcs(template.FuncMap{"escapePath": func(s string) string {
-		return strings.Replace(s, `\`, `\\`, -1)
-	}}).Parse(t)
-	if err != nil {
+	var verrsrc bufferCoff
+	if _, err := t.WriteTo(&verrsrc); err != nil {
 		return err
 	}
 
-	return template.Execute(w, f)
+	b.Coff.AddResource(16, 1, &verrsrc)
+
+	return nil
+}
+
+type windowsInfoValueFixed struct {
+	Signature      uint32
+	StructVersion  uint32
+	FileVersion    [2]uint32
+	ProductVersion [2]uint32
+	FileFlagMask   uint32
+	FileFlags      uint32
+	FileOS         uint32
+	FileType       uint32
+	FileSubType    uint32
+	FileDate       [2]uint32
+}
+
+func (v windowsInfoValueFixed) WriteTo(w io.Writer) (_ int64, err error) {
+	return 0, binary.Write(w, binary.LittleEndian, v)
+}
+
+type windowsInfoValue struct {
+	Length      uint16
+	ValueLength uint16
+	Type        uint16
+	Key         []byte
+	Value       []byte
+}
+
+func (v windowsInfoValue) WriteTo(w io.Writer) (_ int64, err error) {
+	// binary.Write doesn't support []byte inside struct. 0.o
+	if err = binary.Write(w, binary.LittleEndian, [3]uint16{v.Length, v.ValueLength, v.Type}); err != nil {
+		return 0, err
+	}
+	if _, err = w.Write(v.Key); err != nil {
+		return 0, err
+	}
+	if _, err = w.Write(v.Value); err != nil {
+		return 0, err
+	}
+	return 0, nil
+}
+
+const (
+	valueBinary uint16 = 0
+	valueText   uint16 = 1
+)
+
+func newValue(valueType uint16, key string, input interface{}) windowsInfoValue {
+	v := windowsInfoValue{
+		Type: valueType,
+		Key:  stringBytes(key, 6),
+	}
+
+	v.Length = 6 + uint16(len(v.Key))
+
+	switch in := input.(type) {
+	case string:
+		v.Value = stringBytes(in, 0)
+		v.ValueLength = uint16(len(v.Value) / 2)
+	case []io.WriterTo:
+		var buff bytes.Buffer
+		for k := range in {
+			if _, err := in[k].WriteTo(&buff); err != nil {
+				panic(err)
+			}
+		}
+		v.Value = buff.Bytes()
+	default:
+		var buff bytes.Buffer
+		if err := binary.Write(&buff, binary.LittleEndian, in); err != nil {
+			panic(err)
+		}
+		v.ValueLength = uint16(buff.Len())
+		v.Value = buff.Bytes()
+	}
+
+	v.Length += uint16(len(v.Value))
+
+	return v
+}
+
+func stringBytes(s string, previous int) []byte {
+	r := []rune(s)
+	l := (len(r) * 2) + 2 // +2 due to null-termination
+
+	b := make([]byte, l+(l+previous)%4)
+	for k, v := range r {
+		b[(k * 2)] = byte(v)
+		b[(k*2)+1] = byte(v >> 8)
+	}
+
+	return b
 }
