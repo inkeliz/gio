@@ -329,15 +329,15 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 		return nil
 	})
 	classFiles = append(classFiles, extraJars...)
-	apkDir := filepath.Join(tmpDir, "apk")
-	if err := os.MkdirAll(apkDir, 0755); err != nil {
+	dexDir := filepath.Join(tmpDir, "apk")
+	if err := os.MkdirAll(dexDir, 0755); err != nil {
 		return err
 	}
 	if len(classFiles) > 0 {
 		d8 := exec.Command(
 			filepath.Join(tools.buildtools, "d8"),
 			"--classpath", tools.androidjar,
-			"--output", apkDir,
+			"--output", dexDir,
 		)
 		d8.Args = append(d8.Args, classFiles...)
 		if _, err := runCmd(d8); err != nil {
@@ -349,7 +349,9 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	resDir := filepath.Join(tmpDir, "res")
 	valDir := filepath.Join(resDir, "values")
 	v21Dir := filepath.Join(resDir, "values-v21")
-	for _, dir := range []string{valDir, v21Dir} {
+	xmlDir := filepath.Join(resDir, "xml")
+	xmlDirV32 := filepath.Join(resDir, "xml-v32")
+	for _, dir := range []string{valDir, v21Dir, xmlDir, xmlDirV32} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -358,6 +360,7 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	if _, err := os.Stat(bi.iconPath); err == nil {
 		err := buildIcons(resDir, bi.iconPath, []iconVariant{
 			{path: filepath.Join("mipmap-hdpi", "ic_launcher.png"), size: 72},
+			{path: filepath.Join("drawable", "ic_launcher.png"), size: 96},
 			{path: filepath.Join("mipmap-xhdpi", "ic_launcher.png"), size: 96},
 			{path: filepath.Join("mipmap-xxhdpi", "ic_launcher.png"), size: 144},
 			{path: filepath.Join("mipmap-xxxhdpi", "ic_launcher.png"), size: 192},
@@ -367,14 +370,13 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 		}
 		iconSnip = `android:icon="@mipmap/ic_launcher"`
 	}
-	err = ioutil.WriteFile(filepath.Join(valDir, "themes.xml"), []byte(themes), 0660)
-	if err != nil {
-		return err
-	}
-	err = ioutil.WriteFile(filepath.Join(v21Dir, "themes.xml"), []byte(themesV21), 0660)
-	if err != nil {
-		return err
-	}
+	ioutil.WriteFile(filepath.Join(valDir, "themes.xml"), []byte(themes), 0660)
+	ioutil.WriteFile(filepath.Join(v21Dir, "themes.xml"), []byte(themesV21), 0660)
+	ioutil.WriteFile(filepath.Join(xmlDir, "authenticator.xml"), []byte(`<?xml version="1.0" encoding="utf-8"?>
+<account-authenticator xmlns:android="http://schemas.android.com/apk/res/android"
+                       android:accountType="app.instelikes"
+                       android:icon="@drawable/ic_launcher"
+                       android:smallIcon="@drawable/ic_launcher"/>`), 0660)
 	resZip := filepath.Join(tmpDir, "resources.zip")
 	aapt2 := filepath.Join(tools.buildtools, "aapt2")
 	_, err = runCmd(exec.Command(
@@ -416,9 +418,14 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	android:versionCode="{{.Version}}"
 	android:versionName="1.0.{{.Version}}">
 	<uses-sdk android:minSdkVersion="{{.MinSDK}}" android:targetSdkVersion="{{.TargetSDK}}" />
+<uses-permission android:name="android.permission.GET_ACCOUNTS" />
+<uses-permission android:name="android.permission.MANAGE_ACCOUNTS" />
+<uses-permission android:name="android.permission.AUTHENTICATE_ACCOUNTS" />
+<uses-permission android:name="android.permission.USE_CREDENTIALS" />
 {{range .Permissions}}	<uses-permission android:name="{{.}}"/>
 {{end}}{{range .Features}}	<uses-feature android:{{.}} android:required="false"/>
-{{end}}	<application {{.IconSnip}} android:label="{{.AppName}}">
+{{end}}	
+<application android:allowBackup="true" {{.IconSnip}} android:label="{{.AppName}}">
 		<activity android:name="org.gioui.GioActivity"
 			android:label="{{.AppName}}"
 			android:theme="@style/Theme.GioApp"
@@ -429,6 +436,14 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 				<category android:name="android.intent.category.LAUNCHER" />
 			</intent-filter>
 		</activity>
+		<service android:name="com.inkeliz.giocredentials.cred_auth_service_android">
+			<intent-filter>
+				<action android:name="android.accounts.AccountAuthenticator"/>
+			</intent-filter>
+			<meta-data
+				android:name="android.accounts.AccountAuthenticator"
+				android:resource="@xml/authenticator" />
+		</service>
 	</application>
 </manifest>`)
 	var manifestBuffer bytes.Buffer
@@ -440,13 +455,13 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 		return err
 	}
 
-	tmpapk := filepath.Join(tmpDir, "link.apk")
+	linkAPK := filepath.Join(tmpDir, "link.apk")
 	link := exec.Command(
 		aapt2,
 		"link",
 		"--manifest", manifest,
 		"-I", tools.androidjar,
-		"-o", tmpapk,
+		"-o", linkAPK,
 		resZip,
 	)
 	if _, err := runCmd(link); err != nil {
@@ -455,45 +470,82 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	// The Go standard library archive/zip doesn't support appending to zip
 	// files. Unpack the apk from aapt2 and re-zip its contents along with
 	// classes.dex and the Go libraries.
-	if err := unzip(apkDir, tmpapk); err != nil {
+
+	// Load link.apk as Zip:
+	linkAPKZip, err := zip.OpenReader(linkAPK)
+	if err != nil {
 		return err
 	}
-	tmpApk := filepath.Join(tmpDir, "app.ap_")
-	ap_, err := os.Create(tmpApk)
+	defer linkAPKZip.Close()
+
+	// Create new "APK":
+	unsignedAPK := filepath.Join(tmpDir, "app.ap_")
+	unsignedAPKFile, err := os.Create(unsignedAPK)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		if cerr := ap_.Close(); err == nil {
+		if cerr := unsignedAPKFile.Close(); err == nil {
 			err = cerr
 		}
 	}()
-	apkw := newZipWriter(ap_)
-	defer apkw.Close()
-	err = filepath.Walk(apkDir, func(path string, f os.FileInfo, err error) error {
+	unsignedAPKZip := zip.NewWriter(unsignedAPKFile)
+	defer unsignedAPKZip.Close()
+
+	// Copy files from linkAPK to unsignedAPK:
+	for _, f := range linkAPKZip.File {
+		h := f.FileHeader
+		h.CRC32 = 0
+		h.CompressedSize = 0
+		h.UncompressedSize = 0
+		h.CompressedSize64 = 0
+		h.UncompressedSize64 = 0
+
+		w, err := unsignedAPKZip.CreateHeader(&h)
 		if err != nil {
 			return err
 		}
-		if f.IsDir() {
-			return nil
+		r, err := f.Open()
+		if err != nil {
+			return err
 		}
-		zpath := path[len(apkDir)+1:]
-		if filepath.Base(path) == "resources.arsc" {
-			apkw.Store(zpath, path)
-		} else {
-			apkw.Add(zpath, path)
+		if _, err := io.Copy(w, r); err != nil {
+			return err
 		}
-		return nil
-	})
-	if err != nil {
+	}
+
+	// Append new files (that doesn't exists inside the link.apk):
+	appendToZip := func(path string, file string) error {
+		f, err := os.Open(file)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w, err := unsignedAPKZip.CreateHeader(&zip.FileHeader{
+			Name:   filepath.ToSlash(path),
+			Method: zip.Deflate,
+		})
+		if err != nil {
+			return err
+		}
+		_, err = io.Copy(w, f)
 		return err
 	}
+
+	// Append each libgio.so (lib/{arch}/libgio.so):
 	for _, a := range bi.archs {
 		arch := allArchs[a]
 		libFile := filepath.Join(arch.jniArch, "libgio.so")
-		apkw.Add(filepath.ToSlash(filepath.Join("lib", libFile)), filepath.Join(tmpDir, "jni", libFile))
+		if err := appendToZip(filepath.Join("lib", libFile), filepath.Join(tmpDir, "jni", libFile)); err != nil {
+			return err
+		}
 	}
-	return apkw.Close()
+
+	// Append `classes.dex`:
+	if err := appendToZip("classes.dex", filepath.Join(dexDir, "classes.dex")); err != nil {
+		return err
+	}
+	return unsignedAPKZip.Close()
 }
 
 func signAPK(tmpDir string, tools *androidTools, bi *buildInfo) error {
@@ -549,38 +601,6 @@ func signAPK(tmpDir string, tools *androidTools, bi *buildInfo) error {
 	))
 	if err != nil {
 		return err
-	}
-	return nil
-}
-
-func unzip(dir, zipfile string) (err error) {
-	zipr, err := zip.OpenReader(zipfile)
-	if err != nil {
-		return err
-	}
-	defer zipr.Close()
-	for _, f := range zipr.File {
-		path := filepath.Join(dir, f.Name)
-		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return err
-		}
-		out, err := os.Create(path)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if cerr := out.Close(); err == nil {
-				err = cerr
-			}
-		}()
-		in, err := f.Open()
-		if err != nil {
-			return err
-		}
-		defer in.Close()
-		if _, err := io.Copy(out, in); err != nil {
-			return err
-		}
 	}
 	return nil
 }
