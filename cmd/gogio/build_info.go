@@ -12,17 +12,24 @@ import (
 )
 
 type buildInfo struct {
-	appID    string
-	archs    []string
-	ldflags  string
-	minsdk   int
-	name     string
-	pkgDir   string
-	pkgPath  string
-	iconPath string
-	tags     string
-	target   string
-	version  int
+	appID     string
+	archs     []string
+	ldflags   string
+	minsdk    int
+	name      string
+	pkgDir    string
+	pkgPath   string
+	iconPath  string
+	tags      string
+	target    string
+	version   int
+	signature buildSigner
+}
+
+type buildSigner struct {
+	cert     string
+	key      string
+	password string
 }
 
 func newBuildInfo(pkgPath string) (*buildInfo, error) {
@@ -47,6 +54,11 @@ func newBuildInfo(pkgPath string) (*buildInfo, error) {
 		tags:     *extraTags,
 		target:   *target,
 		version:  *version,
+		signature: buildSigner{
+			cert:     *signCert,
+			key:      *signKey,
+			password: *signPass,
+		},
 	}
 	return bi, nil
 }

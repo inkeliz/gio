@@ -35,6 +35,10 @@ var (
 	extraLdflags  = flag.String("ldflags", "", "extra flags to the Go linker")
 	extraTags     = flag.String("tags", "", "extra tags to the Go tool")
 	iconPath      = flag.String("icon", "", "Specify an icon for iOS and Android")
+
+	signKey      = flag.String("key", "", "Specify the path of the key/keystore to sign binaries.")
+	signCert     = flag.String("cert", "", "Specify the path of certificate-chain, used together with key. It's only needed if the provided-key isn't a PKCS12.")
+	signPass     = flag.String("pass", "", "Specify the password that decrypt the key.")
 )
 
 func main() {

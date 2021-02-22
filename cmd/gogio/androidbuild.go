@@ -348,7 +348,9 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	resDir := filepath.Join(tmpDir, "res")
 	valDir := filepath.Join(resDir, "values")
 	v21Dir := filepath.Join(resDir, "values-v21")
-	for _, dir := range []string{valDir, v21Dir} {
+	xmlDir := filepath.Join(resDir, "xml")
+	xmlDirV32 := filepath.Join(resDir, "xml-v32")
+	for _, dir := range []string{valDir, v21Dir, xmlDir, xmlDirV32} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return err
 		}
@@ -357,6 +359,7 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	if _, err := os.Stat(bi.iconPath); err == nil {
 		err := buildIcons(resDir, bi.iconPath, []iconVariant{
 			{path: filepath.Join("mipmap-hdpi", "ic_launcher.png"), size: 72},
+			{path: filepath.Join("drawable", "ic_launcher.png"), size: 72},
 			{path: filepath.Join("mipmap-xhdpi", "ic_launcher.png"), size: 96},
 			{path: filepath.Join("mipmap-xxhdpi", "ic_launcher.png"), size: 144},
 			{path: filepath.Join("mipmap-xxxhdpi", "ic_launcher.png"), size: 192},
@@ -388,7 +391,7 @@ func exeAndroid(tmpDir string, tools *androidTools, bi *buildInfo, extraJars, pe
 	// Link APK.
 	// Currently, new apps must have a target SDK version of at least 28.
 	// https://developer.android.com/distribute/best-practices/develop/target-sdk
-	targetSDK := 28
+	targetSDK := 29
 	if bi.minsdk > targetSDK {
 		targetSDK = bi.minsdk
 	}
@@ -548,43 +551,69 @@ func signAPK(tmpDir string, tools *androidTools, bi *buildInfo) error {
 	if err != nil {
 		return err
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	keystore := filepath.Join(home, ".android", "debug.keystore")
-	if _, err := os.Stat(keystore); err != nil {
-		keystore = filepath.Join(tmpDir, "sign.keystore")
-		keytool, err := findKeytool()
-		if err != nil {
-			return err
-		}
-		_, err = runCmd(exec.Command(
-			keytool,
-			"-genkey",
-			"-keystore", keystore,
-			"-storepass", "android",
-			"-alias", "android",
-			"-keyalg", "RSA", "-keysize", "2048",
-			"-validity", "10000",
-			"-noprompt",
-			"-dname", "CN=android",
-		))
-		if err != nil {
+
+	if bi.signature.key == "" {
+		if err := defaultAndroidKeystore(tmpDir, bi); err != nil {
 			return err
 		}
 	}
-	_, err = runCmd(exec.Command(
-		filepath.Join(tools.buildtools, "apksigner"),
-		"sign",
-		"--ks-pass", "pass:android",
-		"--ks", keystore,
-		apkFile,
-	))
+
+	buildParams := []string{"sign"}
+	if bi.signature.cert == "" {
+		// Keystore.
+		buildParams = append(buildParams, []string{
+			"--ks-pass", "pass:" + bi.signature.password,
+			"--ks", bi.signature.key,
+		}...)
+	} else {
+		// Cert + Key.
+		buildParams = append(buildParams, []string{
+			"--key-pass", "pass:" + bi.signature.password,
+			"--key", bi.signature.key,
+			"--cert", bi.signature.cert,
+		}...)
+	}
+
+	_, err = runCmd(exec.Command(filepath.Join(tools.buildtools, "apksigner"), append(buildParams, apkFile)...))
 	if err != nil {
 		return err
 	}
 	return nil
+}
+
+func defaultAndroidKeystore(tmpDir string, bi *buildInfo) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	// Use debug.keystore, if exists.
+	bi.signature = buildSigner{
+		key:      filepath.Join(home, ".android", "debug.keystore"),
+		password: "android",
+	}
+	if _, err := os.Stat(bi.signature.key); err == nil {
+		return nil
+	}
+
+	// Generate new key.
+	bi.signature.key = filepath.Join(tmpDir, "sign.keystore")
+	keytool, err := findKeytool()
+	if err != nil {
+		return err
+	}
+	_, err = runCmd(exec.Command(
+		keytool,
+		"-genkey",
+		"-keystore", bi.signature.key,
+		"-storepass", "android",
+		"-alias", "android",
+		"-keyalg", "RSA", "-keysize", "2048",
+		"-validity", "10000",
+		"-noprompt",
+		"-dname", "CN=android",
+	))
+	return err
 }
 
 func findNDK(androidHome string) (string, error) {
