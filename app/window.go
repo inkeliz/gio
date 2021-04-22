@@ -464,10 +464,28 @@ const (
 
 // WindowMode sets the window mode.
 //
-// Supported platforms are macOS, X11 and Windows.
+// Supported platforms are macOS, X11, Windows and JS.
 func WindowMode(mode wm.WindowMode) Option {
 	return func(opts *wm.Options) {
 		opts.WindowMode = &mode
+	}
+}
+
+var (
+	// AnyOrientation allows the window to be freely orientated.
+	AnyOrientation = orientation(wm.AnyOrientation)
+	// LandscapeOrientation constrains the window to landscape orientations.
+	LandscapeOrientation = orientation(wm.LandscapeOrientation)
+	// PortraitOrientation constrains the window to portrait orientations.
+	PortraitOrientation = orientation(wm.PortraitOrientation)
+)
+
+// orientation sets the orientation of the app.
+//
+// Supported platforms are Android and JS (JS may requires to run on Fullscreen).
+func orientation(mode wm.Orientation) Option {
+	return func(opts *wm.Options) {
+		opts.Orientation = &mode
 	}
 }
 
