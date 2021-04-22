@@ -198,6 +198,10 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
         this.setBarColor(Bar.NAVIGATION, color, luminance);
     }
 
+    private void setOrientation(int id) {
+        ((Activity) this.getContext()).setRequestedOrientation(id);
+    }
+
 	private void dispatchMotionEvent(MotionEvent event) {
 		for (int j = 0; j < event.getHistorySize(); j++) {
 			long time = event.getHistoricalEventTime(j);

@@ -28,6 +28,7 @@ type Options struct {
 	WindowMode      *WindowMode
 	StatusColor     *color.NRGBA
 	NavigationColor *color.NRGBA
+	Orientation     *OrientationMode
 }
 
 type WindowMode uint8
@@ -35,6 +36,14 @@ type WindowMode uint8
 const (
 	Windowed WindowMode = iota
 	Fullscreen
+)
+
+type OrientationMode uint8
+
+const (
+	UnlockedOrientation OrientationMode = iota
+	LockedLandscape
+	LockedPortrait
 )
 
 type FrameEvent struct {
