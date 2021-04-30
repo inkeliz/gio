@@ -13,10 +13,11 @@ import (
 type TextInputState uint8
 
 type keyQueue struct {
-	focus    event.Tag
-	handlers map[event.Tag]*keyHandler
-	reader   ops.Reader
-	state    TextInputState
+	focus     event.Tag
+	handlers  map[event.Tag]*keyHandler
+	reader    ops.Reader
+	state     TextInputState
+	stateMode key.KeyboardMode
 }
 
 type keyHandler struct {
@@ -34,8 +35,8 @@ const (
 
 // InputState returns the last text input state as
 // determined in Frame.
-func (q *keyQueue) InputState() TextInputState {
-	return q.state
+func (q *keyQueue) InputState() (TextInputState, key.KeyboardMode) {
+	return q.state, q.stateMode
 }
 
 func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
@@ -47,7 +48,7 @@ func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
 	}
 	q.reader.Reset(root)
 
-	focus, changed, state := q.resolveFocus(events)
+	focus, changed, state, mode := q.resolveFocus(events)
 	for k, h := range q.handlers {
 		if !h.visible {
 			delete(q.handlers, k)
@@ -78,6 +79,7 @@ func (q *keyQueue) Frame(root *op.Ops, events *handlerEvents) {
 		}
 	}
 	q.state = state
+	q.stateMode = mode
 }
 
 func (q *keyQueue) Push(e event.Event, events *handlerEvents) {
@@ -86,7 +88,7 @@ func (q *keyQueue) Push(e event.Event, events *handlerEvents) {
 	}
 }
 
-func (q *keyQueue) resolveFocus(events *handlerEvents) (focus event.Tag, changed bool, state TextInputState) {
+func (q *keyQueue) resolveFocus(events *handlerEvents) (focus event.Tag, changed bool, state TextInputState, mode key.KeyboardMode) {
 	for encOp, ok := q.reader.Decode(); ok; encOp, ok = q.reader.Decode() {
 		switch opconst.OpType(encOp.Data[0]) {
 		case opconst.TypeKeyFocus:
@@ -97,6 +99,7 @@ func (q *keyQueue) resolveFocus(events *handlerEvents) (focus event.Tag, changed
 			op := decodeSoftKeyboardOp(encOp.Data, encOp.Refs)
 			if op.Show {
 				state = TextInputOpen
+				mode = op.Mode
 			} else {
 				state = TextInputClose
 			}
@@ -128,6 +131,7 @@ func decodeSoftKeyboardOp(d []byte, refs []interface{}) key.SoftKeyboardOp {
 	}
 	return key.SoftKeyboardOp{
 		Show: d[1] != 0,
+		Mode: key.KeyboardMode(d[2]),
 	}
 }
 

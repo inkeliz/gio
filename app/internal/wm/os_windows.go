@@ -688,7 +688,7 @@ func loadCursor(name pointer.CursorName) (syscall.Handle, error) {
 	return windows.LoadCursor(curID)
 }
 
-func (w *window) ShowTextInput(show bool) {}
+func (w *window) ShowTextInput(show bool, _ key.KeyboardMode) {}
 
 func (w *window) HDC() syscall.Handle {
 	return w.hdc

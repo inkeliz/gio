@@ -1493,7 +1493,7 @@ func (w *window) surface() (*C.struct_wl_surface, int, int) {
 	return w.surf, width * scale, height * scale
 }
 
-func (w *window) ShowTextInput(show bool) {}
+func (w *window) ShowTextInput(show bool, _ key.KeyboardMode) {}
 
 // Close the window. Not implemented for Wayland.
 func (w *window) Close() {}

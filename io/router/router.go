@@ -98,7 +98,7 @@ func (q *Router) Queue(events ...event.Event) bool {
 
 // TextInputState returns the input state from the most recent
 // call to Frame.
-func (q *Router) TextInputState() TextInputState {
+func (q *Router) TextInputState() (TextInputState, key.KeyboardMode) {
 	return q.kqueue.InputState()
 }
 

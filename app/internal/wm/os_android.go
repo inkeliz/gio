@@ -224,7 +224,7 @@ func Java_org_gioui_GioView_onCreateView(env *C.JNIEnv, class C.jclass, view C.j
 		m := &gioView
 		m.getDensity = getMethodID(env, class, "getDensity", "()I")
 		m.getFontScale = getMethodID(env, class, "getFontScale", "()F")
-		m.showTextInput = getMethodID(env, class, "showTextInput", "()V")
+		m.showTextInput = getMethodID(env, class, "showTextInput", "(I)V")
 		m.hideTextInput = getMethodID(env, class, "hideTextInput", "()V")
 		m.postFrameCallback = getMethodID(env, class, "postFrameCallback", "()V")
 		m.setCursor = getMethodID(env, class, "setCursor", "(I)V")
@@ -566,13 +566,21 @@ func Java_org_gioui_GioView_onTouchEvent(env *C.JNIEnv, class C.jclass, handle C
 	})
 }
 
-func (w *window) ShowTextInput(show bool) {
+func (w *window) ShowTextInput(show bool, mode key.KeyboardMode) {
 	runOnMain(func(env *C.JNIEnv) {
 		if w.view == 0 {
 			return
 		}
 		if show {
-			callVoidMethod(env, w.view, gioView.showTextInput)
+			var m jvalue
+			// Constants defined at https://developer.android.com/reference/android/text/InputType.
+			switch mode {
+			case key.KeyboardNumeric:
+				m = 2 | 8192 | 4096 // TYPE_CLASS_NUMBER | TYPE_NUMBER_FLAG_DECIMAL | TYPE_NUMBER_FLAG_SIGNED
+			default:
+				m = 0 // TYPE_NULL, since TYPE_CLASS_TEXT isn't currently supported, so TYPE_NULL is used instead.
+			}
+			callVoidMethod(env, w.view, gioView.showTextInput, m)
 		} else {
 			callVoidMethod(env, w.view, gioView.hideTextInput)
 		}

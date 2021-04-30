@@ -45,6 +45,8 @@ type Editor struct {
 	// Newline characters are not masked. When non-zero, the unmasked contents
 	// are accessed by Len, Text, and SetText.
 	Mask rune
+	// Mode changes the on-screen-keyboard appearance.
+	Mode key.KeyboardMode
 
 	eventKey     int
 	font         text.Font
@@ -536,7 +538,7 @@ func (e *Editor) layout(gtx layout.Context) layout.Dimensions {
 	key.InputOp{Tag: &e.eventKey}.Add(gtx.Ops)
 	if e.requestFocus {
 		key.FocusOp{Tag: &e.eventKey}.Add(gtx.Ops)
-		key.SoftKeyboardOp{Show: true}.Add(gtx.Ops)
+		key.SoftKeyboardOp{Show: true, Mode: e.Mode}.Add(gtx.Ops)
 	}
 	e.requestFocus = false
 	pointerPadding := gtx.Px(unit.Dp(4))

@@ -182,7 +182,7 @@ func (w *window) SetCursor(name pointer.CursorName) {
 	w.cursor = windowSetCursor(w.cursor, name)
 }
 
-func (w *window) ShowTextInput(show bool) {}
+func (w *window) ShowTextInput(show bool, _ key.KeyboardMode) {}
 
 func (w *window) SetAnimating(anim bool) {
 	if anim {

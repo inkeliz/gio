@@ -163,11 +163,12 @@ func (w *Window) validateAndProcess(frameStart time.Time, size image.Point, sync
 func (w *Window) processFrame(frameStart time.Time, size image.Point, frame *op.Ops) {
 	sync := w.loop.Draw(size, frame)
 	w.queue.q.Frame(frame)
-	switch w.queue.q.TextInputState() {
+	state, mode := w.queue.q.TextInputState()
+	switch state {
 	case router.TextInputOpen:
-		w.driver.ShowTextInput(true)
+		w.driver.ShowTextInput(true, mode)
 	case router.TextInputClose:
-		w.driver.ShowTextInput(false)
+		w.driver.ShowTextInput(false, mode)
 	}
 	if txt, ok := w.queue.q.WriteClipboard(); ok {
 		go w.WriteClipboard(txt)

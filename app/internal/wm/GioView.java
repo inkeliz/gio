@@ -35,6 +35,7 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
 import android.view.inputmethod.EditorInfo;
+import android.text.InputType;
 
 import java.io.UnsupportedEncodingException;
 
@@ -46,6 +47,8 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 	private final InputMethodManager imm;
 	private final float scrollXScale;
 	private final float scrollYScale;
+	private int keyboardMode;
+	private int lastKeyboardMode;
 
 	private long nhandle;
 
@@ -242,11 +245,18 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 		}
 	}
 
-	@Override public InputConnection onCreateInputConnection(EditorInfo outAttrs) {
+	@Override public InputConnection onCreateInputConnection(EditorInfo editor) {
+	    editor.inputType = this.keyboardMode;
+	    editor.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_FLAG_NO_EXTRACT_UI;
 		return new InputConnection(this);
 	}
 
-	void showTextInput() {
+	void showTextInput(int mode) {
+	    this.keyboardMode = mode;
+	    if (this.lastKeyboardMode != mode) {
+	        imm.restartInput(this);
+	        this.lastKeyboardMode = mode;
+	    }
 		GioView.this.requestFocus();
 		imm.showSoftInput(GioView.this, 0);
 	}

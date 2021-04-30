@@ -52,7 +52,7 @@ const (
 	TypeClipboardWriteLen  = 1
 	TypeKeyInputLen        = 1
 	TypeKeyFocusLen        = 1
-	TypeKeySoftKeyboardLen = 1 + 1
+	TypeKeySoftKeyboardLen = 1 + 2
 	TypeSaveLen            = 1 + 4
 	TypeLoadLen            = 1 + 1 + 4
 	TypeAuxLen             = 1

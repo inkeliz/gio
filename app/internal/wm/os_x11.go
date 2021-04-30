@@ -246,7 +246,7 @@ func (w *x11Window) SetWindowMode(mode WindowMode) {
 	)
 }
 
-func (w *x11Window) ShowTextInput(show bool) {}
+func (w *x11Window) ShowTextInput(show bool, _ key.KeyboardMode) {}
 
 // Close the window.
 func (w *x11Window) Close() {

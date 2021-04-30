@@ -291,7 +291,7 @@ func (w *window) isVisible() bool {
 	return w.visible.Load().(bool)
 }
 
-func (w *window) ShowTextInput(show bool) {
+func (w *window) ShowTextInput(show bool, _ key.KeyboardMode) {
 	v := w.view
 	if v == 0 {
 		return

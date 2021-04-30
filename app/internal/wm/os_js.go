@@ -308,6 +308,25 @@ func (w *window) focus() {
 	w.requestFocus = true
 }
 
+func (w *window) keyboard(mode key.KeyboardMode) {
+	var m string
+	switch mode {
+	case key.KeyboardDefault:
+		m = "text"
+	case key.KeyboardNumeric:
+		m = "decimal"
+	case key.KeyboardEmail:
+		m = "email"
+	case key.KeyboardUrl:
+		m = "url"
+	case key.KeyboardTelephone:
+		m = "tel"
+	default:
+		m = "text"
+	}
+	w.tarea.Set("inputMode", m)
+}
+
 func (w *window) keyEvent(e js.Value, ks key.State) {
 	k := e.Get("key").String()
 	if n, ok := translateKey(k); ok {
@@ -508,11 +527,12 @@ func (w *window) SetCursor(name pointer.CursorName) {
 	style.Set("cursor", string(name))
 }
 
-func (w *window) ShowTextInput(show bool) {
+func (w *window) ShowTextInput(show bool, mode key.KeyboardMode) {
 	// Run in a goroutine to avoid a deadlock if the
 	// focus change result in an event.
 	go func() {
 		if show {
+			w.keyboard(mode)
 			w.focus()
 		} else {
 			w.blur()

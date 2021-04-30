@@ -29,6 +29,7 @@ type InputOp struct {
 // It replaces any previous SoftKeyboardOp.
 type SoftKeyboardOp struct {
 	Show bool
+	Mode KeyboardMode
 }
 
 // FocusOp sets or clears the keyboard focus. It replaces any previous
@@ -63,6 +64,23 @@ type Event struct {
 type EditEvent struct {
 	Text string
 }
+
+// VirtualKeyboardMode changes the on-screen-keyboard type. That hints the
+// type of data that might be entered by the user.
+type KeyboardMode uint8
+
+const (
+	// KeyboardDefault is the default keyboard (alphanumeric).
+	KeyboardDefault KeyboardMode = iota
+	// KeyboardNumeric is an keyboard containing 0-9 Digits and decimal separator (`.` or `,`).
+	KeyboardNumeric
+	// KeyboardEmail is an keyboard containing "@", ".com" and other optimizations.
+	KeyboardEmail
+	// KeyboardUrl is an keyboard containing "/", ".com" and other optimizations.
+	KeyboardUrl
+	// KeyboardTelephone is an keyboard containing 0-9 Digits and the pound (#) and the asterisk (*).
+	KeyboardTelephone
+)
 
 // State is the state of a key during an event.
 type State uint8
@@ -135,6 +153,7 @@ func (h SoftKeyboardOp) Add(o *op.Ops) {
 	if h.Show {
 		data[1] = 1
 	}
+	data[2] = byte(h.Mode)
 }
 
 func (h FocusOp) Add(o *op.Ops) {
