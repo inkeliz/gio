@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Unlicense OR MIT
 
+//go:build darwin && ios
 // +build darwin,ios
 
 package wm
@@ -137,6 +138,8 @@ func (c *context) MakeCurrent() error {
 	}
 	return nil
 }
+
+func (c *context) ReleaseCurrent() {}
 
 func (w *window) NewContext() (Context, error) {
 	return newContext(w)
