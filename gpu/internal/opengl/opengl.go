@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"runtime"
 	"strings"
 	"time"
 	"unsafe"
@@ -790,6 +791,10 @@ func (b *Backend) Release() {
 
 func (b *Backend) MemoryBarrier() {
 	b.funcs.MemoryBarrier(gl.ALL_BARRIER_BITS)
+	if runtime.GOOS == "android" {
+		// Several Android drivers don't respect glMemoryBarrier.
+		b.funcs.Flush()
+	}
 }
 
 func (b *Backend) DispatchCompute(x, y, z int) {
