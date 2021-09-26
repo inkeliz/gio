@@ -2,10 +2,8 @@
 
 package gl
 
-import "syscall/js"
-
 type (
-	Object       js.Value
+	Object       value
 	Buffer       Object
 	Framebuffer  Object
 	Program      Object
@@ -18,11 +16,11 @@ type (
 )
 
 func (o Object) valid() bool {
-	return js.Value(o).Truthy()
+	return o.ref != 0
 }
 
 func (o Object) equal(o2 Object) bool {
-	return js.Value(o).Equal(js.Value(o2))
+	return o.ref == o2.ref
 }
 
 func (b Buffer) Valid() bool {
