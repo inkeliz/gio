@@ -4,6 +4,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"syscall/js"
 
 	"gioui.org/gpu"
@@ -24,13 +25,15 @@ func newContext(w *window) (*glContext, error) {
 	}
 	ctx := w.cnv.Call("getContext", "webgl2", args)
 	if ctx.IsNull() {
+		fmt.Println("is null webgl 2")
 		ctx = w.cnv.Call("getContext", "webgl", args)
 	}
 	if ctx.IsNull() {
 		return nil, errors.New("app: webgl is not supported")
 	}
+
 	c := &glContext{
-		ctx: ctx,
+		ctx: js.Global().Get("WebGLDebugUtils").Call("makeDebugContext", ctx, js.Global().Get("throwOnGLError"), js.Global().Get("validateNoneOfTheArgsAreUndefined")),
 		cnv: w.cnv,
 	}
 	return c, nil
