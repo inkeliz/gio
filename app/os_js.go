@@ -54,6 +54,9 @@ type window struct {
 	// is pending.
 	animRequested bool
 	wakeups       chan struct{}
+
+	contextLost          bool
+	contextLostRecovered bool
 }
 
 func newWindow(win *callbacks, options []Option) error {
@@ -162,6 +165,22 @@ func (w *window) cleanup() {
 }
 
 func (w *window) addEventListeners() {
+	w.addEventListener(w.cnv, "webglcontextlost", func(this js.Value, args []js.Value) interface{} {
+		args[0].Call("preventDefault")
+		w.contextLost = true
+		w.cnv.Set("width", 0)
+		w.cnv.Set("height", 0)
+		w.w.Event(system.StageEvent{Stage: system.StagePaused})
+		return nil
+	})
+	w.addEventListener(w.cnv, "webglcontextrestored", func(this js.Value, args []js.Value) interface{} {
+		w.contextLost = false
+		w.contextLostRecovered = true
+		w.resize()
+		w.w.Event(system.StageEvent{Stage: system.StageRunning})
+		w.chanRedraw <- struct{}{}
+		return nil
+	})
 	w.addEventListener(w.visualViewport, "resize", func(this js.Value, args []js.Value) interface{} {
 		w.resize()
 		w.chanRedraw <- struct{}{}

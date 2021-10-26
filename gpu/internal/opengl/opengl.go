@@ -685,10 +685,6 @@ func (t *texture) ensureFBO() gl.Framebuffer {
 		panic(err)
 	}
 	b.funcs.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, t.obj, 0)
-	if st := b.funcs.CheckFramebufferStatus(gl.FRAMEBUFFER); st != gl.FRAMEBUFFER_COMPLETE {
-		b.funcs.DeleteFramebuffer(fb)
-		panic(fmt.Errorf("incomplete framebuffer, status = 0x%x, err = %d", st, b.funcs.GetError()))
-	}
 	t.fbo = fb
 	t.hasFBO = true
 	return fb

@@ -453,6 +453,6 @@ func paramVal(v js.Value) int {
 	case js.TypeNumber:
 		return v.Int()
 	default:
-		panic("unknown parameter type")
+		return 0
 	}
 }
