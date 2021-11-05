@@ -86,10 +86,17 @@ import (
 	"gioui.org/unit"
 )
 
-type ViewEvent struct{}
+type ViewEvent struct {
+	// View is a CFTypeRef for the NSView for the window.
+	View uintptr
+	
+	// Window is a CFTypeRef for the NSView for the window.
+	Window uintptr
+}
 
 type window struct {
 	view        C.CFTypeRef
+	window      C.CFTypeRef
 	w           *callbacks
 	displayLink *displayLink
 
@@ -109,9 +116,10 @@ func init() {
 }
 
 //export onCreate
-func onCreate(view C.CFTypeRef) {
+func onCreate(view, win C.CFTypeRef) {
 	w := &window{
-		view: view,
+		view:   view,
+		window: win,
 	}
 	dl, err := NewDisplayLink(func() {
 		w.draw(false)
@@ -125,6 +133,7 @@ func onCreate(view C.CFTypeRef) {
 	w.w.SetDriver(w)
 	views[view] = w
 	w.w.Event(system.StageEvent{Stage: system.StagePaused})
+	w.w.Event(ViewEvent{View: uintptr(view), Window: uintptr(win)})
 }
 
 //export gio_onDraw
