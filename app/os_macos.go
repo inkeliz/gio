@@ -9,9 +9,11 @@ import (
 	"errors"
 	"image"
 	"io"
+	"net/url"
 	"runtime"
 	"runtime/cgo"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -333,6 +335,17 @@ type window struct {
 
 // launched is closed when applicationDidFinishLaunching is called.
 var launched = make(chan struct{})
+
+// activeViews is the list of active windows.
+var activeViews = make([]*window, 0, 1)
+
+// mutexActiveViews protects activeViews.
+var mutexActiveViews = sync.Mutex{}
+
+// startupURI is the URL event that was received before the app was launched.
+// Since the app is not running yet, the URL event is stored and processed after
+// the view is created.
+var startupURI *url.URL
 
 // nextTopLeft is the offset to use for the next window's call to
 // cascadeTopLeftFromPoint.
@@ -865,6 +878,10 @@ func gio_onAttached(h C.uintptr_t, attached C.int) {
 	if attached != 0 {
 		layer := C.layerForView(w.view)
 		w.ProcessEvent(AppKitViewEvent{View: uintptr(w.view), Layer: uintptr(layer)})
+		if startupURI != nil {
+			w.ProcessEvent(transfer.URLEvent{URL: startupURI})
+			startupURI = nil
+		}
 	} else {
 		w.ProcessEvent(AppKitViewEvent{})
 		w.visible = false
@@ -879,6 +896,14 @@ func gio_onDestroy(h C.uintptr_t) {
 	w.displayLink.Close()
 	w.displayLink = nil
 	cgo.Handle(h).Delete()
+	mutexActiveViews.Lock()
+	for i, win := range activeViews {
+		if win == w {
+			activeViews = append(activeViews[:i], activeViews[i+1:]...)
+			break
+		}
+	}
+	mutexActiveViews.Unlock()
 	w.view = 0
 }
 
@@ -912,6 +937,23 @@ func gio_onWindowed(h C.uintptr_t) {
 //export gio_onFinishLaunching
 func gio_onFinishLaunching() {
 	close(launched)
+}
+
+//export gio_onOpenURI
+func gio_onOpenURI(uri C.CFTypeRef) {
+	u, err := url.Parse(nsstringToString(uri))
+	if err != nil {
+		return
+	}
+
+	if len(activeViews) == 0 {
+		startupURI = u
+		return
+	}
+
+	for _, w := range activeViews {
+		w.ProcessEvent(transfer.URLEvent{URL: u})
+	}
 }
 
 func newWindow(win *callbacks, options []Option) {
@@ -971,6 +1013,9 @@ func (w *window) init() error {
 		return err
 	}
 	C.gio_viewSetHandle(view, C.uintptr_t(cgo.NewHandle(w)))
+	mutexActiveViews.Lock()
+	activeViews = append(activeViews, w)
+	mutexActiveViews.Unlock()
 	w.view = view
 	return nil
 }
