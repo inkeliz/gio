@@ -331,7 +331,7 @@ func (p *pointerFilter) Matches(e event.Event) bool {
 		}
 	case transfer.URLEvent:
 		for _, t := range p.scheme {
-			if e.URL != nil && (t == "" || t == e.URL.Scheme) {
+			if t == "" || t == e.URL.Scheme {
 				return true
 			}
 		}

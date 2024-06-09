@@ -58,10 +58,9 @@ type TargetFilter struct {
 	Type string
 }
 
-// URLFilter filters for any [URLEvent] which the scheme matches against
-// the scheme from the event.
+// URLFilter filters for [URLEvent].
 type URLFilter struct {
-	// If it's blank/empty, it will handle any scheme.
+	// Scheme must equal the URLEvent scheme to match. The empty Scheme matches all URLEvents.
 	Scheme string
 }
 
@@ -101,12 +100,11 @@ type DataEvent struct {
 
 func (DataEvent) ImplementsEvent() {}
 
-// URLEvent is generated when the app is invoked with a URL. This event is sent to
-// all SchemeOps that match the URL scheme.
+// URLEvent is generated when the program is invoked with a URL. It is matched
+// by [URLFilter].
 //
-// In order to receive URLEvents, it's necessary to use SchemeOp and the app must
-// register a scheme. The scheme can be registered using gogio, with `-schemes <scheme>`
-// flag.
+// In order to receive the program must register a scheme. The scheme can be registered
+// using gogio, with the `-schemes` flag.
 //
 // Due to differences between OSes, URLEvent might not be generated when the URL is
 // larger than 2048 characters. Domain names using non-ASCII characters have
