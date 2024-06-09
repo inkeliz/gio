@@ -61,10 +61,9 @@ type window struct {
 	invMu sync.Mutex
 }
 
-const (
-	_WM_WAKEUP = windows.WM_USER + iota
-	_WM_OPEN_URL
-)
+const _WM_WAKEUP = windows.WM_USER + iota
+
+const copyDataURLType = 0xffffff00
 
 type gpuAPI struct {
 	priority    int
@@ -441,7 +440,7 @@ func windowProc(hwnd syscall.Handle, msg uint32, wParam, lParam uintptr) uintptr
 	case windows.WM_COPYDATA:
 		data := (*windows.CopyDataStruct)(unsafe.Pointer(lParam))
 		switch data.DwData {
-		case _WM_OPEN_URL:
+		case copyDataURLType:
 			if schemesURI == "" {
 				return windows.TRUE
 			}
@@ -1085,7 +1084,7 @@ func startupURI() string {
 func broadcastURI(hwnd syscall.Handle, uri string) {
 	u := syscall.StringToUTF16Ptr(uri)
 	msg := &windows.CopyDataStruct{
-		DwData: _WM_OPEN_URL,
+		DwData: copyDataURLType,
 		CbData: uint32(len(uri)*2 + 1),
 		LpData: uintptr(unsafe.Pointer(u)),
 	}
