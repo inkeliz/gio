@@ -82,13 +82,12 @@ import "C"
 import (
 	"image"
 	"io"
-	"os"
 	"net/url"
+	"os"
 	"runtime"
 	"runtime/cgo"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf16"
 	"unsafe"
@@ -126,9 +125,6 @@ var mainWindow = newWindowRendezvous()
 // activeViews is the list of active views.
 var activeViews = make([]*window, 0, 1)
 
-// mutexActiveViews is used to protect activeViews.
-var mutexActiveViews = sync.Mutex{}
-
 // startupURI is the URI to open when the first window is created,
 // but no window is active yet.
 var startupURI *url.URL
@@ -157,9 +153,7 @@ func onCreate(view, controller C.CFTypeRef) {
 	}
 	w.displayLink = dl
 	C.gio_viewSetHandle(view, C.uintptr_t(cgo.NewHandle(w)))
-	mutexActiveViews.Lock()
 	activeViews = append(activeViews, w)
-	mutexActiveViews.Unlock()
 	w.Configure(wopts.options)
 	w.ProcessEvent(UIKitViewEvent{ViewController: uintptr(controller)})
 	if startupURI != nil {
@@ -232,14 +226,12 @@ func onDestroy(h C.uintptr_t) {
 	w.displayLink.Close()
 	w.displayLink = nil
 	cgo.Handle(h).Delete()
-	mutexActiveViews.Lock()
 	for i, v := range activeViews {
 		if v == w {
 			activeViews = append(activeViews[:i], activeViews[i+1:]...)
 			break
 		}
 	}
-	mutexActiveViews.Unlock()
 	w.view = 0
 }
 
