@@ -57,6 +57,8 @@ import android.view.accessibility.AccessibilityManager;
 
 import java.io.UnsupportedEncodingException;
 
+import android.util.Log;
+
 public final class GioView extends SurfaceView implements Choreographer.FrameCallback {
 	private static boolean jniLoaded;
 
@@ -259,6 +261,10 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 	}
 
 	private void setHighRefreshRate() {
+		if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+			return;
+		}
+
 		Context context = getContext();
 		Display display = context.getDisplay();
 		Display.Mode[] supportedModes = display.getSupportedModes();
