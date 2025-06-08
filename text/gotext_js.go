@@ -79,8 +79,12 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 	defer successCallback.Release()
 	
 	errorCallback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			done <- fmt.Errorf("error querying fonts: %s", args[0].Get("message").String())
+		if len(args) > 0 && args[0].Truthy() {
+			msg := "unknown error"
+			if msgVal := args[0].Get("message"); msgVal.Truthy() {
+				msg = msgVal.String()
+			}
+			done <- fmt.Errorf("error querying fonts: %s", msg)
 		} else {
 			done <- fmt.Errorf("unknown error querying fonts")
 		}
@@ -90,34 +94,10 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 	
 	promise.Call("then", successCallback).Call("catch", errorCallback)
 	
-	// Wait for the promise to resolve with a timeout
-	select {
-	case err := <-done:
-		return err
-	case <-timeoutChannel(10): // 10 second timeout
-		return fmt.Errorf("timeout loading fonts via Local Font Access API")
-	}
+	// Wait for the promise to resolve
+	return <-done
 }
 
-// timeoutChannel creates a channel that sends after the specified seconds
-func timeoutChannel(seconds int) <-chan struct{} {
-	ch := make(chan struct{})
-	go func() {
-		// Use JavaScript's setTimeout to implement timeout
-		timeout := js.Global().Get("setTimeout")
-		if timeout.Truthy() {
-			callback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-				close(ch)
-				return nil
-			})
-			timeout.Invoke(callback, seconds*1000)
-		} else {
-			// Fallback: close immediately if setTimeout is not available
-			close(ch)
-		}
-	}()
-	return ch
-}
 
 // loadSingleFontJS loads a single font from the Local Font Access API
 func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
@@ -194,8 +174,12 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 		defer arrayBufferSuccess.Release()
 		
 		arrayBufferError := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-			if len(args) > 0 {
-				done <- fmt.Errorf("error converting ArrayBuffer: %s", args[0].Get("message").String())
+			if len(args) > 0 && args[0].Truthy() {
+				msg := "unknown error"
+				if msgVal := args[0].Get("message"); msgVal.Truthy() {
+					msg = msgVal.String()
+				}
+				done <- fmt.Errorf("error converting ArrayBuffer: %s", msg)
 			} else {
 				done <- fmt.Errorf("unknown error converting ArrayBuffer")
 			}
@@ -209,8 +193,12 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 	defer successCallback.Release()
 	
 	errorCallback := js.FuncOf(func(this js.Value, args []js.Value) interface{} {
-		if len(args) > 0 {
-			done <- fmt.Errorf("error getting blob: %s", args[0].Get("message").String())
+		if len(args) > 0 && args[0].Truthy() {
+			msg := "unknown error"
+			if msgVal := args[0].Get("message"); msgVal.Truthy() {
+				msg = msgVal.String()
+			}
+			done <- fmt.Errorf("error getting blob: %s", msg)
 		} else {
 			done <- fmt.Errorf("unknown error getting blob")
 		}
@@ -220,15 +208,8 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 	
 	promise.Call("then", successCallback).Call("catch", errorCallback)
 	
-	// Wait for the blob to be loaded with timeout
-	select {
-	case err := <-done:
-		if err != nil {
-			return err
-		}
-	case <-timeoutChannel(5): // 5 second timeout per font
-		return fmt.Errorf("timeout loading font blob for %s", family)
-	}
+	// Wait for the blob to be loaded
+	return <-done
 	
 	if len(fontData) == 0 {
 		return fmt.Errorf("font data is empty for %s", family)

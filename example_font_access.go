@@ -12,6 +12,7 @@ import (
 	"gioui.org/layout"
 	"gioui.org/op"
 	"gioui.org/text"
+	"gioui.org/unit"
 	"gioui.org/widget/material"
 )
 
@@ -36,16 +37,25 @@ func main() {
 			case app.FrameEvent:
 				gtx := app.NewContext(&ops, e)
 				
-				// Create text content
-				content := "Hello, World! This text should use system fonts if Local Font Access API is available."
-				
 				// Layout the text
 				layout.Flex{Axis: layout.Vertical}.Layout(gtx,
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 						return material.H1(th, "System Font Test").Layout(gtx)
 					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						content := "This application demonstrates Local Font Access API support in Gio for WASM."
 						return material.Body1(th, content).Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						content := "If you granted font access permission, this text should be rendered with system fonts."
+						return material.Body2(th, content).Layout(gtx)
+					}),
+					layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
+					layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+						content := "Check the browser console for font loading messages and progress."
+						return material.Caption(th, content).Layout(gtx)
 					}),
 				)
 				
