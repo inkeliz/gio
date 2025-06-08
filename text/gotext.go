@@ -255,13 +255,19 @@ func newShaperImpl(systemFonts bool, collection []FontFace) *shaperImpl {
 	shaper.fontMap = fontscan.NewFontMap(shaper.logger)
 	shaper.faceToIndex = make(map[*font.Font]int)
 	if systemFonts {
-		str, err := os.UserCacheDir()
-		if err != nil {
-			shaper.logger.Printf("failed resolving font cache dir: %v", err)
-			shaper.logger.Printf("skipping system font load")
-		}
-		if err := shaper.fontMap.UseSystemFonts(str); err != nil {
-			shaper.logger.Printf("failed loading system fonts: %v", err)
+		// Try JS-specific font loading first (Local Font Access API)
+		if err := loadSystemFontsJS(&shaper); err != nil {
+			shaper.logger.Printf("Local Font Access API failed: %v", err)
+			// Fall back to traditional system font loading
+			str, err := os.UserCacheDir()
+			if err != nil {
+				shaper.logger.Printf("failed resolving font cache dir: %v", err)
+				shaper.logger.Printf("skipping system font load")
+			} else {
+				if err := shaper.fontMap.UseSystemFonts(str); err != nil {
+					shaper.logger.Printf("failed loading system fonts: %v", err)
+				}
+			}
 		}
 	}
 	for _, f := range collection {
