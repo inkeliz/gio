@@ -278,6 +278,13 @@ func newShaperImpl(systemFonts bool, collection []FontFace) *shaperImpl {
 	return &shaper
 }
 
+// TryReloadSystemFonts attempts to reload system fonts if they weren't loaded initially
+// due to permission issues. This can be called after the user grants font access permission.
+func (s *shaperImpl) TryReloadSystemFonts() error {
+	// Only attempt on JS platform
+	return loadSystemFontsJS(s)
+}
+
 // Load registers the provided FontFace with the shaper, if it is compatible.
 // It returns whether the face is now available for use. FontFaces are prioritized
 // in the order in which they are loaded, with the first face being the default.

@@ -7,6 +7,10 @@ package text
 import (
 	"fmt"
 	"syscall/js"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"time"
 
 	"gioui.org/font/opentype"
 )
@@ -28,6 +32,13 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 	query := fonts.Get("query")
 	if !query.Truthy() {
 		return fmt.Errorf("fonts.query() not available")
+	}
+	
+	// Try to get cached fonts first
+	cache, err := getCachedFonts()
+	if err != nil {
+		shaper.logger.Printf("failed to get font cache: %v", err)
+		cache = make(map[string]fontCacheEntry)
 	}
 	
 	// Create a promise to load fonts
@@ -65,11 +76,16 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 		// Load fonts sequentially to avoid overwhelming the browser
 		for i := 0; i < length && i < 50; i++ { // Limit to 50 fonts to avoid performance issues
 			font := fonts.Index(i)
-			if err := loadSingleFontJS(shaper, font); err != nil {
+			if err := loadSingleFontJS(shaper, font, cache); err != nil {
 				shaper.logger.Printf("failed to load font %d: %v", i, err)
 			} else {
 				loaded++
 			}
+		}
+		
+		// Update cache
+		if err := setCachedFonts(cache); err != nil {
+			shaper.logger.Printf("failed to update font cache: %v", err)
 		}
 		
 		shaper.logger.Printf("successfully loaded %d system fonts", loaded)
@@ -84,7 +100,12 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 			if msgVal := args[0].Get("message"); msgVal.Truthy() {
 				msg = msgVal.String()
 			}
-			done <- fmt.Errorf("error querying fonts: %s", msg)
+			// Handle permission denied specifically for late-authorization
+			if args[0].Get("name").String() == "NotAllowedError" {
+				done <- fmt.Errorf("font access permission denied - user can grant permission later")
+			} else {
+				done <- fmt.Errorf("error querying fonts: %s", msg)
+			}
 		} else {
 			done <- fmt.Errorf("unknown error querying fonts")
 		}
@@ -99,8 +120,86 @@ func loadSystemFontsJS(shaper *shaperImpl) error {
 }
 
 
+// fontCacheEntry represents a cached font entry
+type fontCacheEntry struct {
+	Family    string    `json:"family"`
+	Style     string    `json:"style"`
+	Hash      string    `json:"hash"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
+// getCachedFonts retrieves cached font metadata from localStorage
+func getCachedFonts() (map[string]fontCacheEntry, error) {
+	localStorage := js.Global().Get("localStorage")
+	if !localStorage.Truthy() {
+		return nil, fmt.Errorf("localStorage not available")
+	}
+	
+	cacheData := localStorage.Call("getItem", "gio_font_cache")
+	if !cacheData.Truthy() {
+		return make(map[string]fontCacheEntry), nil
+	}
+	
+	var cache map[string]fontCacheEntry
+	if err := json.Unmarshal([]byte(cacheData.String()), &cache); err != nil {
+		// Clear invalid cache and start fresh
+		localStorage.Call("removeItem", "gio_font_cache")
+		return make(map[string]fontCacheEntry), nil
+	}
+	
+	return cache, nil
+}
+
+// setCachedFonts stores font metadata in localStorage
+func setCachedFonts(cache map[string]fontCacheEntry) error {
+	localStorage := js.Global().Get("localStorage")
+	if !localStorage.Truthy() {
+		return fmt.Errorf("localStorage not available")
+	}
+	
+	data, err := json.Marshal(cache)
+	if err != nil {
+		return err
+	}
+	
+	localStorage.Call("setItem", "gio_font_cache", string(data))
+	return nil
+}
+
+// getFontHash generates a hash for the font data
+func getFontHash(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
+}
+
+// isSupportedFontFormat checks if the font format is supported by the OpenType parser
+func isSupportedFontFormat(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	
+	// Check for common OpenType/TrueType signatures
+	signature := string(data[:4])
+	switch signature {
+	case "OTTO": // OpenType with CFF outlines
+		return true
+	case "\x00\x01\x00\x00": // TrueType signature
+		return true
+	case "true": // TrueType on Mac
+		return true
+	case "typ1": // Type 1 font (not supported by go-text/typesetting)
+		return false
+	default:
+		// Check for TrueType Collection signature
+		if len(data) >= 4 && string(data[:4]) == "ttcf" {
+			return true
+		}
+		return false
+	}
+}
+
 // loadSingleFontJS loads a single font from the Local Font Access API
-func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
+func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value, cache map[string]fontCacheEntry) error {
 	// Get font metadata
 	family := fontHandle.Get("family").String()
 	style := fontHandle.Get("style").String()
@@ -108,6 +207,8 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 	if family == "" {
 		return fmt.Errorf("font has no family name")
 	}
+	
+	cacheKey := family + ":" + style
 	
 	// Get the font blob
 	blobMethod := fontHandle.Get("blob")
@@ -209,10 +310,28 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 	promise.Call("then", successCallback).Call("catch", errorCallback)
 	
 	// Wait for the blob to be loaded
-	return <-done
+	if err := <-done; err != nil {
+		return err
+	}
 	
 	if len(fontData) == 0 {
 		return fmt.Errorf("font data is empty for %s", family)
+	}
+	
+	// Check if the font format is supported
+	if !isSupportedFontFormat(fontData) {
+		return fmt.Errorf("unsupported font format for %s", family)
+	}
+	
+	// Check cache to avoid reprocessing fonts
+	fontHash := getFontHash(fontData)
+	if cached, exists := cache[cacheKey]; exists {
+		// Check if the font hasn't changed and isn't too old (cache for 7 days)
+		if cached.Hash == fontHash && time.Since(cached.Timestamp) < 7*24*time.Hour {
+			shaper.logger.Printf("using cached font: %s (%s)", family, style)
+			// Font is cached and still valid, skip loading
+			return nil
+		}
 	}
 	
 	// Parse the font data
@@ -229,6 +348,14 @@ func loadSingleFontJS(shaper *shaperImpl, fontHandle js.Value) error {
 	
 	shaper.Load(fontFace)
 	shaper.logger.Printf("loaded system font: %s (%s)", family, style)
+	
+	// Update cache with successful load
+	cache[cacheKey] = fontCacheEntry{
+		Family:    family,
+		Style:     style,
+		Hash:      fontHash,
+		Timestamp: time.Now(),
+	}
 	
 	return nil
 }

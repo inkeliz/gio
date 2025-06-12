@@ -22,10 +22,19 @@ The Local Font Access API is a browser feature (currently supported in Chrome/Ch
 
 2. The implementation:
    - Calls `navigator.fonts.query()` to enumerate available fonts
-   - Loads each font as a blob using `font.blob()`
+   - Validates font formats (OpenType, TrueType, TrueType Collection)
+   - Uses localStorage caching to avoid reloading unchanged fonts
+   - Loads each supported font as a blob using `font.blob()`
    - Converts the blob to an ArrayBuffer and copies it to Go
    - Parses the font data using the existing OpenType parser
    - Registers the fonts with the text shaper
+   - Handles permission errors gracefully with retry capability
+
+3. Caching and Performance:
+   - Fonts are cached in localStorage with SHA256 hashes for validation
+   - Cache entries expire after 7 days
+   - Only supported font formats are processed to avoid parser errors
+   - Font loading is limited to 50 fonts to prevent browser performance issues
 
 ## Usage
 
@@ -76,6 +85,21 @@ The Local Font Access API requires user permission. The browser will show a perm
 - Allow: Grant access to local fonts
 - Block: Deny access (fallback to embedded fonts)
 - Allow this time: Grant temporary access
+
+### Late Authorization
+
+If the user initially denies font access but later wants to grant it, your application can retry font loading without restarting:
+
+```go
+// When user grants permission (e.g., through a UI button)
+if shaper, ok := myShaper.(*text.shaperImpl); ok {
+    if err := shaper.TryReloadSystemFonts(); err != nil {
+        log.Printf("Failed to reload system fonts: %v", err)
+    }
+}
+```
+
+Note: The `TryReloadSystemFonts()` method is only available on JS/WASM builds and will return an error on other platforms.
 
 ## Limitations
 
