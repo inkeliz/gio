@@ -255,13 +255,19 @@ func newShaperImpl(systemFonts bool, collection []FontFace) *shaperImpl {
 	shaper.fontMap = fontscan.NewFontMap(shaper.logger)
 	shaper.faceToIndex = make(map[*font.Font]int)
 	if systemFonts {
-		str, err := os.UserCacheDir()
-		if err != nil {
-			shaper.logger.Printf("failed resolving font cache dir: %v", err)
-			shaper.logger.Printf("skipping system font load")
-		}
-		if err := shaper.fontMap.UseSystemFonts(str); err != nil {
-			shaper.logger.Printf("failed loading system fonts: %v", err)
+		// Try JS-specific font loading first (Local Font Access API)
+		if err := loadSystemFontsJS(&shaper); err != nil {
+			shaper.logger.Printf("Local Font Access API failed: %v", err)
+			// Fall back to traditional system font loading
+			str, err := os.UserCacheDir()
+			if err != nil {
+				shaper.logger.Printf("failed resolving font cache dir: %v", err)
+				shaper.logger.Printf("skipping system font load")
+			} else {
+				if err := shaper.fontMap.UseSystemFonts(str); err != nil {
+					shaper.logger.Printf("failed loading system fonts: %v", err)
+				}
+			}
 		}
 	}
 	for _, f := range collection {
@@ -270,6 +276,13 @@ func newShaperImpl(systemFonts bool, collection []FontFace) *shaperImpl {
 	}
 	shaper.shaper.SetFontCacheSize(32)
 	return &shaper
+}
+
+// TryReloadSystemFonts attempts to reload system fonts if they weren't loaded initially
+// due to permission issues. This can be called after the user grants font access permission.
+func (s *shaperImpl) TryReloadSystemFonts() error {
+	// Only attempt on JS platform
+	return loadSystemFontsJS(s)
 }
 
 // Load registers the provided FontFace with the shaper, if it is compatible.

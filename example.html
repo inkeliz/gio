@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Gio WASM Font Access Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+            background-color: #d1ecf1;
+        }
+        .warning {
+            border-left-color: #ffc107;
+            background-color: #fff3cd;
+        }
+        .error {
+            border-left-color: #dc3545;
+            background-color: #f8d7da;
+        }
+        #canvas {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            display: block;
+            margin: 20px auto;
+        }
+        .instructions {
+            margin: 20px 0;
+        }
+        code {
+            background-color: #f8f9fa;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Gio WASM Local Font Access Demo</h1>
+        
+        <div class="instructions">
+            <h2>Instructions</h2>
+            <ol>
+                <li>Make sure you're using Chrome 103+ or another Chromium-based browser</li>
+                <li>This page must be served over HTTPS or localhost for the Local Font Access API to work</li>
+                <li>Click anywhere on the page to start the Gio application</li>
+                <li>Grant permission when prompted to access local fonts</li>
+                <li>Observe the console logs for font loading progress</li>
+            </ol>
+        </div>
+
+        <div id="status" class="status">
+            <strong>Status:</strong> Loading WASM application...
+        </div>
+
+        <div id="app-container">
+            <!-- Gio will create its canvas here -->
+        </div>
+    </div>
+
+    <script>
+        // Check browser support
+        function checkSupport() {
+            const statusDiv = document.getElementById('status');
+            
+            if (!navigator.fonts || !navigator.fonts.query) {
+                statusDiv.className = 'status warning';
+                statusDiv.innerHTML = '<strong>Warning:</strong> Local Font Access API not available. The app will use embedded fonts only.';
+                return false;
+            }
+            
+            statusDiv.className = 'status';
+            statusDiv.innerHTML = '<strong>Status:</strong> Local Font Access API available. Starting application...';
+            return true;
+        }
+        
+        // Check support immediately
+        const hasSupport = checkSupport();
+        
+        // Log font access attempts
+        if (hasSupport) {
+            console.log('Local Font Access API detected');
+            
+            // Test the API directly to show what's available
+            navigator.fonts.query().then(fonts => {
+                console.log(`Found ${fonts.length} local fonts:`, fonts.map(f => f.family).slice(0, 10));
+            }).catch(err => {
+                console.warn('Failed to query fonts:', err);
+            });
+        }
+    </script>
+
+    <!-- Load the Go WASM runtime -->
+    <script src="wasm_exec.js"></script>
+    <script>
+        // Load and run the WASM application
+        const go = new Go();
+        
+        WebAssembly.instantiateStreaming(fetch("example.wasm"), go.importObject)
+            .then((result) => {
+                console.log('WASM loaded successfully');
+                const statusDiv = document.getElementById('status');
+                statusDiv.innerHTML = '<strong>Status:</strong> WASM application loaded. Click to interact.';
+                
+                go.run(result.instance);
+            })
+            .catch((err) => {
+                console.error('Failed to load WASM:', err);
+                const statusDiv = document.getElementById('status');
+                statusDiv.className = 'status error';
+                statusDiv.innerHTML = '<strong>Error:</strong> Failed to load WASM application. Check console for details.';
+            });
+    </script>
+</body>
+</html>
