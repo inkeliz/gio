@@ -419,7 +419,7 @@ func (w *window) keyEvent(e js.Value, ks key.State) {
 		}
 
 		if ks == key.Press {
-			isMod := n == key.NameAlt || n == key.NameCommand || n == key.NameCtrl || n == key.NameShift
+			isMod := n == key.NameAlt || n == key.NameCommand || n == key.NameCtrl || n == key.NameShift || n == key.NameSuper
 			isFunc := n == key.NameUpArrow || n == key.NameDownArrow || n == key.NameLeftArrow || n == key.NameRightArrow ||
 				n == key.NamePageUp || n == key.NamePageDown || n == key.NameHome || n == key.NameEnd ||
 				n == key.NameEscape || n == key.NameReturn || n == key.NameEnter || n == key.NameTab
