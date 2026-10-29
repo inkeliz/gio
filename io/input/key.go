@@ -3,9 +3,9 @@
 package input
 
 import (
+	"cmp"
 	"image"
 	"slices"
-	"sort"
 
 	"gioui.org/f32"
 	"gioui.org/io/event"
@@ -131,8 +131,8 @@ func (q *keyQueue) Frame(handlers map[event.Tag]*handler, state keyState) keySta
 func (q *keyQueue) updateFocusLayout(handlers map[event.Tag]*handler) {
 	order := q.dirOrder
 	// Sort by ascending y position.
-	sort.SliceStable(order, func(i, j int) bool {
-		return order[i].bounds.Min.Y < order[j].bounds.Min.Y
+	slices.SortStableFunc(order, func(a, b dirFocusEntry) int {
+		return cmp.Compare(a.bounds.Min.Y, b.bounds.Min.Y)
 	})
 	row := 0
 	for len(order) > 0 {
@@ -149,8 +149,8 @@ func (q *keyQueue) updateFocusLayout(handlers map[event.Tag]*handler) {
 			h.row = row
 		}
 		// Sort row by ascending x position.
-		sort.SliceStable(order[:end], func(i, j int) bool {
-			return order[i].bounds.Min.X < order[j].bounds.Min.X
+		slices.SortStableFunc(order[:end], func(a, b dirFocusEntry) int {
+			return cmp.Compare(a.bounds.Min.X, b.bounds.Min.X)
 		})
 		order = order[end:]
 		row++

@@ -26,11 +26,12 @@ type SRGBFBO struct {
 	quad     gl.Buffer
 	prog     gl.Program
 	format   textureTriple
+	rawBlit  func(int, int, int, int, int, int, int, int, gl.Enum, gl.Enum)
 }
 
 func NewSRGBFBO(f *gl.Functions, state *glState) (*SRGBFBO, error) {
 	glVer := f.GetString(gl.VERSION)
-	ver, _, err := gl.ParseGLVersion(glVer)
+	ver, gles, err := gl.ParseGLVersion(glVer)
 	if err != nil {
 		return nil, err
 	}
@@ -47,6 +48,13 @@ func NewSRGBFBO(f *gl.Functions, state *glState) (*SRGBFBO, error) {
 		fbo:    f.CreateFramebuffer(),
 		tex:    f.CreateTexture(),
 	}
+	// EXT_sRGB_write_control lets a framebuffer blit copy encoded sRGB
+	// values without decoding them. Keep the shader fallback for other APIs.
+	if blitter, ok := any(f).(interface {
+		BlitFramebuffer(int, int, int, int, int, int, int, int, gl.Enum, gl.Enum)
+	}); ok && gles && ver[0] >= 3 && srgbTriple.internalFormat == gl.SRGB8_ALPHA8 && hasExtension(exts, "GL_EXT_sRGB_write_control") {
+		s.rawBlit = blitter.BlitFramebuffer
+	}
 	state.bindTexture(f, 0, s.tex)
 	f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
 	f.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
@@ -55,7 +63,22 @@ func NewSRGBFBO(f *gl.Functions, state *glState) (*SRGBFBO, error) {
 	return s, nil
 }
 
-func (s *SRGBFBO) Blit() {
+func (s *SRGBFBO) Blit(clear bool) {
+	if clear && s.rawBlit != nil && s.c.GetInteger(0x80a8 /* GL_SAMPLE_BUFFERS */) == 0 {
+		// The output is replaced, so no blending is needed. Copy the already
+		// encoded pixels instead of decoding and encoding them in a shader.
+		// GLES sRGB enable state is not tracked by glState.
+		srgb := s.c.IsEnabled(gl.FRAMEBUFFER_SRGB)
+		s.c.Disable(gl.FRAMEBUFFER_SRGB)
+		s.state.bindFramebuffer(s.c, gl.READ_FRAMEBUFFER, s.fbo)
+		s.rawBlit(0, 0, s.viewport.X, s.viewport.Y, 0, 0, s.viewport.X, s.viewport.Y, gl.COLOR_BUFFER_BIT, gl.NEAREST)
+		if srgb {
+			s.c.Enable(gl.FRAMEBUFFER_SRGB)
+		}
+		s.state.bindFramebuffer(s.c, gl.FRAMEBUFFER, s.fbo)
+		s.c.InvalidateFramebuffer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0)
+		return
+	}
 	if !s.blitted {
 		prog, err := gl.CreateProgram(s.c, blitVSrc, blitFSrc, []string{"pos", "uv"})
 		if err != nil {

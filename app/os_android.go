@@ -11,6 +11,20 @@ package app
 #include <android/keycodes.h>
 #include <android/input.h>
 #include <stdlib.h>
+#include <time.h>
+
+static jlong jni_MonotonicTime(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (jlong)now.tv_sec * 1000000000LL + now.tv_nsec;
+}
+
+static void jni_PresentFrame(JNIEnv *env, jobject view, jmethodID method, jboolean sync, jlong beforeSwap) {
+	jvalue args[2] = {0};
+	args[0].z = sync;
+	args[1].j = beforeSwap;
+	(*env)->CallVoidMethodA(env, view, method, args);
+}
 
 static jint jni_GetEnv(JavaVM *vm, JNIEnv **env, jint version) {
 	return (*vm)->GetEnv(vm, (void **)env, version);
@@ -185,7 +199,8 @@ type window struct {
 	// embedRegions tracks areas for hit testing.
 	embedRegions gpu.EmbedRegions
 	// frameRegions owns the geometry awaiting its matching surface buffer.
-	frameRegions gpu.EmbedRegions
+	frameRegions   gpu.EmbedRegions
+	frameTimestamp C.jlong
 }
 
 // gioView hold cached JNI methods for GioView.
@@ -505,7 +520,7 @@ func Java_org_gioui_GioView_onCreateView(env *C.JNIEnv, class C.jclass, view C.j
 		m.updateCaret = getMethodID(env, class, "updateCaret", "(FFFFFFFFFF)V")
 		m.setEmbedViewPosition = getMethodID(env, class, "setEmbedViewPosition", "(Landroid/view/View;IIIII)V")
 		m.canDrawFrame = getMethodID(env, class, "canDrawFrame", "()Z")
-		m.presentFrame = getMethodID(env, class, "presentFrame", "()V")
+		m.presentFrame = getMethodID(env, class, "presentFrame", "(ZJ)V")
 	})
 	view = C.jni_NewGlobalRef(env, view)
 	wopts := <-mainWindow.out
@@ -978,7 +993,10 @@ func (w *window) BeforePresent() {
 	w.frameRegions.Pass = append(w.frameRegions.Pass[:0], regions.Pass...)
 	w.frameRegions.Blockers = append(w.frameRegions.Blockers[:0], regions.Blockers...)
 	w.frameRegions.Views = append(w.frameRegions.Views[:0], regions.Views...)
-	if !w.atomic {
+	if w.atomic {
+		// Match ImageReader's automatic CLOCK_MONOTONIC queue timestamps.
+		w.frameTimestamp = C.jni_MonotonicTime()
+	} else {
 		runInJVM(javaVM(), func(env *C.JNIEnv) {
 			w.applyEmbedViews(env)
 		})
@@ -989,9 +1007,15 @@ func (w *window) AfterPresent() error {
 	if !w.atomic {
 		return nil
 	}
+	// Only native view frames need to hold their single geometry snapshot.
+	syncGeometry := C.jboolean(C.JNI_FALSE)
+	if len(w.frameRegions.Views) > 0 || len(w.embedRegions.Views) > 0 {
+		syncGeometry = C.jboolean(C.JNI_TRUE)
+	}
 	var err error
 	runInJVM(javaVM(), func(env *C.JNIEnv) {
-		err = callVoidMethod(env, w.view, gioView.presentFrame)
+		C.jni_PresentFrame(env, w.view, gioView.presentFrame, syncGeometry, w.frameTimestamp)
+		err = exception(env)
 	})
 	return err
 }

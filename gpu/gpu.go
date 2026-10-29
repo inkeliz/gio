@@ -79,14 +79,31 @@ type gpu struct {
 }
 
 type renderer struct {
-	ctx           driver.Device
-	blitter       *blitter
-	pather        *pather
-	packer        packer
-	intersections packer
-	layers        packer
-	layerFBOs     fboSet
-	clearPipeline driver.Pipeline
+	ctx               driver.Device
+	blitter           *blitter
+	pather            *pather
+	packer            packer
+	intersections     packer
+	layers            packer
+	layerFBOs         fboSet
+	clearPipeline     driver.Pipeline
+	batch             *drawBatch
+	raster            rasterCache
+	layerPages        []bool
+	optimDisabled     bool
+	stencilAtlas      stencilAtlas
+	intersectionCache intersectionCache
+
+	stencilKeys, previousStencilKeys map[stencilKey]struct{}
+	stencilTextures                  []driver.Texture
+}
+
+// stencilKey describes the rasterized mask independently of integer scrolling.
+// Geometry digests include every uploaded vertex, independent of paint color.
+type stencilKey struct {
+	digest [32]byte
+	clip   image.Rectangle
+	place  placement
 }
 
 type drawOps struct {
@@ -95,6 +112,7 @@ type drawOps struct {
 	transStack          []f32.Affine2D
 	layers              []opacityLayer
 	opacityStack        []int
+	prunedPaths         map[prunedPath]*pathOp
 	vertCache           []byte
 	viewport            image.Point
 	clear               bool
@@ -111,6 +129,8 @@ type drawOps struct {
 
 type opacityLayer struct {
 	opacity float32
+	key     ops.Key
+	cache   *rasterEntry
 	parent  int
 	// depth of the opacity stack. Layers of equal depth are
 	// independent and may be packed into one atlas.
@@ -157,11 +177,14 @@ type pathOp struct {
 	pathKey   opKey
 	path      bool
 	pathVerts []byte
+	primitive analyticPrimitive
 	parent    *pathOp
 	place     placement
 }
 
 type imageOp struct {
+	culled   bool
+	analytic analyticPrimitive
 	path     *pathOp
 	clip     image.Rectangle
 	material material
@@ -186,9 +209,9 @@ type quadsOp struct {
 }
 
 type opKey struct {
-	outline        bool
-	strokeWidth    float32
-	sx, hx, sy, hy float32
+	outline                bool
+	strokeWidth            float32
+	sx, hx, sy, hy, ox, oy float32
 	ops.Key
 }
 
@@ -451,16 +474,35 @@ func (g *gpu) frame(target RenderTarget) error {
 	viewport := g.renderer.blitter.viewport
 	defFBO := g.ctx.BeginFrame(target, g.drawOps.clear, viewport)
 	defer g.ctx.EndFrame()
-	g.drawOps.buildPaths(g.ctx)
-	for _, img := range g.drawOps.imageOps {
-		expandPathOp(img.path, img.clip)
+	r := g.renderer
+	r.optimDisabled = len(g.drawOps.embedRegions.Views) > 0 || len(g.drawOps.embedRegionsOld) > 0
+	r.batch.beginFrame()
+	if !r.optimDisabled {
+		g.drawOps.simplifyClips()
 	}
+	g.drawOps.cullOccluded()
+	r.raster.prepare(g.ctx, g.drawOps.layers, g.drawOps.imageOps, r.optimDisabled)
+
+	if r.batch != nil && !r.optimDisabled {
+		g.drawOps.useAnalyticPrimitives()
+	}
+	for _, img := range g.drawOps.imageOps {
+		if !img.culled {
+			expandPathOp(img.path, img.clip)
+		}
+	}
+	g.drawOps.buildPaths(g.ctx)
 	g.stencilTimer.begin()
-	g.renderer.packStencils(&g.drawOps.pathOps)
+	// Native-view transitions retain the full mask redraw path.
+	if len(g.drawOps.embedRegions.Views) > 0 || len(g.drawOps.embedRegionsOld) > 0 {
+		clear(g.renderer.stencilTextures)
+	}
+	g.renderer.packStencilsStable(g.drawOps.pathCache, &g.drawOps.pathOps, r.optimDisabled)
 	g.renderer.stencilClips(g.drawOps.pathCache, g.drawOps.pathOps)
-	g.renderer.packIntersections(g.drawOps.imageOps)
-	g.renderer.prepareIntersections(g.drawOps.imageOps)
-	g.renderer.intersect(g.drawOps.imageOps)
+	g.renderer.packIntersectionsIncremental(g.drawOps.pathCache, g.drawOps.imageOps, r.optimDisabled)
+
+	g.renderer.prepareIntersectionsIncremental(g.drawOps.imageOps)
+	g.renderer.intersectIncremental(g.drawOps.imageOps)
 	g.stencilTimer.end()
 	g.coverTimer.begin()
 	g.renderer.uploadImages(g.cache, g.drawOps.imageOps)
@@ -548,9 +590,35 @@ func (t *texture) release() {
 
 func newRenderer(ctx driver.Device) *renderer {
 	r := &renderer{
-		ctx:     ctx,
-		blitter: newBlitter(ctx),
-		pather:  newPather(ctx),
+		ctx:                 ctx,
+		blitter:             newBlitter(ctx),
+		pather:              newPather(ctx),
+		stencilKeys:         make(map[stencilKey]struct{}),
+		previousStencilKeys: make(map[stencilKey]struct{}),
+	}
+	// Reuse the color blit shaders to overwrite dirty float-mask rectangles.
+	vsh, fsh, err := newShaders(ctx, gio.Shader_blit_vert, gio.Shader_blit_frag[materialColor])
+	if err != nil {
+		panic(err)
+	}
+	defer vsh.Release()
+	defer fsh.Release()
+	r.clearPipeline, err = ctx.NewPipeline(driver.PipelineDesc{
+		VertexShader:   vsh,
+		FragmentShader: fsh,
+		VertexLayout: driver.VertexLayout{
+			Inputs: []driver.InputDesc{
+				{Type: shader.DataTypeFloat, Size: 2, Offset: 0},
+				{Type: shader.DataTypeFloat, Size: 2, Offset: 4 * 2},
+			},
+			Stride: 4 * 4,
+		},
+		BlendDesc:   driver.BlendDesc{SrcFactor: driver.BlendFactorOne, DstFactor: driver.BlendFactorZero},
+		PixelFormat: driver.TextureFormatFloat,
+		Topology:    driver.TopologyTriangleStrip,
+	})
+	if err != nil {
+		panic(err)
 	}
 
 	maxDim := ctx.Caps().MaxTextureSize
@@ -564,10 +632,14 @@ func newRenderer(ctx driver.Device) *renderer {
 	r.packer.maxDims = d
 	r.intersections.maxDims = d
 	r.layers.maxDims = d
+	r.batch = newDrawBatch(ctx)
 	return r
 }
 
 func (r *renderer) release() {
+	r.batch.release()
+	r.raster.release()
+	r.clearPipeline.Release()
 	r.pather.release()
 	r.blitter.release()
 	r.layerFBOs.delete(r.ctx, 0)
@@ -747,67 +819,63 @@ func createColorPrograms(b driver.Device, vsSrc shader.Sources, fsSrc [3]shader.
 }
 
 func (r *renderer) stencilClips(pathCache *opCache, ops []*pathOp) {
-	if len(r.packer.sizes) == 0 {
-		return
+	clear(r.stencilKeys)
+	if len(r.packer.sizes) > 0 {
+		r.pather.begin(r.packer.sizes)
 	}
 	fbo := -1
-	r.pather.begin(r.packer.sizes)
+	var preserved bool
 	for _, p := range ops {
+		origin := image.Pt(int(p.off.X), int(p.off.Y))
+		v, _ := pathCache.get(p.pathKey)
+		key := stencilKey{v.data.digest, p.clip.Sub(origin), p.place}
+		if _, duplicate := r.stencilKeys[key]; duplicate {
+			continue
+		}
+		r.stencilKeys[key] = struct{}{}
+		f := r.pather.stenciler.cover(p.place.Idx)
+		contents := p.place.Idx < len(r.stencilTextures) && r.stencilTextures[p.place.Idx] == f.tex
+		if _, cached := r.previousStencilKeys[key]; cached && contents {
+			continue
+		}
 		if fbo != p.place.Idx {
 			if fbo != -1 {
 				r.ctx.EndRenderPass()
 			}
 			fbo = p.place.Idx
-			f := r.pather.stenciler.cover(fbo)
-			r.ctx.BeginRenderPass(f.tex, driver.LoadDesc{Action: driver.LoadActionClear})
-			r.ctx.BindPipeline(r.pather.stenciler.pipeline.pipeline.pipeline)
-			r.ctx.BindIndexBuffer(r.pather.stenciler.indexBuf)
+			preserved = contents
+			action := driver.LoadActionKeep
+			if !preserved {
+				action = driver.LoadActionClear
+			}
+			r.ctx.BeginRenderPass(f.tex, driver.LoadDesc{Action: action})
 		}
-		v, _ := pathCache.get(p.pathKey)
+		if preserved {
+			// Current packed rectangles are disjoint, so clearing a dirty
+			// slot cannot overwrite a retained mask in another current slot.
+			r.ctx.Viewport(p.place.Pos.X, p.place.Pos.Y, p.clip.Dx(), p.clip.Dy())
+			r.ctx.BindPipeline(r.clearPipeline)
+			r.ctx.BindVertexBuffer(r.blitter.quadVerts, 0)
+			u := r.blitter.colUniforms
+			u.transform = [4]float32{1, 1, 0, 0}
+			u.opacity, u.fbo = 1, 1
+			u.color = f32color.RGBA{}
+			// The overwrite pipeline shares this existing uniform buffer.
+			r.blitter.pipelines[1][materialColor].UploadUniforms(r.ctx)
+			r.ctx.DrawArrays(0, 4)
+		}
+		r.ctx.BindPipeline(r.pather.stenciler.pipeline.pipeline.pipeline)
+		r.ctx.BindIndexBuffer(r.pather.stenciler.indexBuf)
 		r.pather.stencilPath(p.clip, p.off, p.place.Pos, v.data)
 	}
 	if fbo != -1 {
 		r.ctx.EndRenderPass()
 	}
-}
-
-func (r *renderer) prepareIntersections(ops []imageOp) {
-	for _, img := range ops {
-		if img.clipType != clipTypeIntersection {
-			continue
-		}
-		fbo := r.pather.stenciler.cover(img.path.place.Idx)
-		r.ctx.PrepareTexture(fbo.tex)
-	}
-}
-
-func (r *renderer) intersect(ops []imageOp) {
-	if len(r.intersections.sizes) == 0 {
-		return
-	}
-	fbo := -1
-	r.pather.stenciler.beginIntersect(r.intersections.sizes)
-	for _, img := range ops {
-		if img.clipType != clipTypeIntersection {
-			continue
-		}
-		if fbo != img.place.Idx {
-			if fbo != -1 {
-				r.ctx.EndRenderPass()
-			}
-			fbo = img.place.Idx
-			f := r.pather.stenciler.intersections.fbos[fbo]
-			d := driver.LoadDesc{Action: driver.LoadActionClear}
-			d.ClearColor.R = 1.0
-			r.ctx.BeginRenderPass(f.tex, d)
-			r.ctx.BindPipeline(r.pather.stenciler.ipipeline.pipeline.pipeline)
-			r.ctx.BindVertexBuffer(r.blitter.quadVerts, 0)
-		}
-		r.ctx.Viewport(img.place.Pos.X, img.place.Pos.Y, img.clip.Dx(), img.clip.Dy())
-		r.intersectPath(img.path, img.clip)
-	}
-	if fbo != -1 {
-		r.ctx.EndRenderPass()
+	r.previousStencilKeys, r.stencilKeys = r.stencilKeys, r.previousStencilKeys
+	clear(r.stencilTextures)
+	r.stencilTextures = r.stencilTextures[:0]
+	for _, f := range r.pather.stenciler.fbos.fbos {
+		r.stencilTextures = append(r.stencilTextures, f.tex)
 	}
 }
 
@@ -840,6 +908,9 @@ func (r *renderer) intersectPath(p *pathOp, clip image.Rectangle) {
 func (r *renderer) packIntersections(ops []imageOp) {
 	r.intersections.clear()
 	for i, img := range ops {
+		if img.culled {
+			continue
+		}
 		var npaths int
 		var onePath *pathOp
 		for p := img.path; p != nil; p = p.parent {
@@ -879,6 +950,14 @@ func (r *renderer) packStencils(pops *[]*pathOp) {
 			ops = ops[:len(ops)-1]
 			continue
 		}
+		// Rasterize bounded shapes in full so integer scrolling and viewport
+		// clipping do not change their masks or atlas placement every frame.
+		// Preserve the old clip and cap any additional work to one viewport.
+		full := p.clip.Union(p.bounds.Add(p.off).Round())
+		size := full.Size()
+		if size.X > 0 && size.Y > 0 && size.X <= r.blitter.viewport.X && size.Y <= r.blitter.viewport.Y && size.X <= r.packer.maxDims.X && size.Y <= r.packer.maxDims.Y {
+			p.clip = full
+		}
 		place, ok := r.packer.add(p.clip.Size())
 		if !ok {
 			// The clip area is at most the entire screen. Hopefully no
@@ -899,7 +978,7 @@ func (r *renderer) packLayers(layers []opacityLayer) []opacityLayer {
 			b := layers[l.parent].clip
 			layers[l.parent].clip = b.Union(l.clip)
 		}
-		if l.clip.Empty() {
+		if l.clip.Empty() || (!r.optimDisabled && l.opacity == 1 && l.cache == nil) {
 			layers = slices.Delete(layers, i, i+1)
 		}
 	}
@@ -908,9 +987,13 @@ func (r *renderer) packLayers(layers []opacityLayer) []opacityLayer {
 	depth := 0
 	for i := range layers {
 		l := &layers[i]
+		if l.cache != nil {
+			continue
+		}
 		// Only layers of the same depth may be packed together.
 		if l.depth != depth {
 			r.layers.newPage()
+			depth = l.depth
 		}
 		place, ok := r.layers.add(l.clip.Size())
 		if !ok {
@@ -924,48 +1007,74 @@ func (r *renderer) packLayers(layers []opacityLayer) []opacityLayer {
 }
 
 func (r *renderer) drawLayers(layers []opacityLayer, ops []imageOp) {
-	if len(r.layers.sizes) == 0 {
-		return
+	r.layerFBOs.resize(r.ctx, driver.TextureFormatSRGBA, r.layers.sizes)
+	if cap(r.layerPages) < len(r.layerFBOs.fbos) {
+		r.layerPages = make([]bool, len(r.layerFBOs.fbos))
+	} else {
+		r.layerPages = r.layerPages[:len(r.layerFBOs.fbos)]
+		clear(r.layerPages)
 	}
 	fbo := -1
-	r.layerFBOs.resize(r.ctx, driver.TextureFormatSRGBA, r.layers.sizes)
 	for _, l := range slices.Backward(layers) {
-
-		if fbo != l.place.Idx {
+		var tex driver.Texture
+		var textureSize image.Point
+		var region image.Rectangle
+		if l.cache != nil {
 			if fbo != -1 {
 				r.ctx.EndRenderPass()
 				r.ctx.PrepareTexture(r.layerFBOs.fbos[fbo].tex)
+				fbo = -1
 			}
-			fbo = l.place.Idx
+			e := l.cache
+			if !e.valid {
+				r.ctx.BeginRenderPass(e.texture, driver.LoadDesc{Action: driver.LoadActionClear})
+				r.ctx.Viewport(0, 0, e.size.X, e.size.Y)
+				r.drawOps(true, l.clip.Min.Mul(-1), e.size, ops[l.opStart:l.opEnd], nil)
+				r.ctx.EndRenderPass()
+				r.ctx.PrepareTexture(e.texture)
+				e.valid = true
+			}
+			tex, textureSize = e.texture, e.size
+			region = image.Rectangle{Max: e.size}
+		} else {
+			if fbo != l.place.Idx {
+				if fbo != -1 {
+					r.ctx.EndRenderPass()
+					r.ctx.PrepareTexture(r.layerFBOs.fbos[fbo].tex)
+				}
+				fbo = l.place.Idx
+				action := driver.LoadActionKeep
+				if !r.layerPages[fbo] {
+					action = driver.LoadActionClear
+					r.layerPages[fbo] = true
+				}
+				r.ctx.BeginRenderPass(r.layerFBOs.fbos[fbo].tex, driver.LoadDesc{Action: action})
+			}
+			region = image.Rectangle{Min: l.place.Pos, Max: l.place.Pos.Add(l.clip.Size())}
+			r.ctx.Viewport(region.Min.X, region.Min.Y, region.Dx(), region.Dy())
+			r.drawOps(true, l.clip.Min.Mul(-1), l.clip.Size(), ops[l.opStart:l.opEnd], nil)
 			f := r.layerFBOs.fbos[fbo]
-			r.ctx.BeginRenderPass(f.tex, driver.LoadDesc{Action: driver.LoadActionClear})
+			tex, textureSize = f.tex, f.size
 		}
-		v := image.Rectangle{
-			Min: l.place.Pos,
-			Max: l.place.Pos.Add(l.clip.Size()),
-		}
-		r.ctx.Viewport(v.Min.X, v.Min.Y, v.Dx(), v.Dy())
-		f := r.layerFBOs.fbos[fbo]
-		r.drawOps(true, l.clip.Min.Mul(-1), l.clip.Size(), ops[l.opStart:l.opEnd], nil)
-		sr := f32.FRect(v)
-		uvScale, uvOffset := texSpaceTransform(sr, f.size)
-		uvTrans := f32.AffineId().Scale(f32.Point{}, uvScale).Offset(uvOffset)
-		// Replace layer ops with one textured op.
-		ops[l.opStart] = imageOp{
-			clip: l.clip,
-			material: material{
-				material: materialTexture,
-				tex:      f.tex,
-				uvTrans:  uvTrans,
-				opacity:  l.opacity,
-			},
-			layerOps: l.opEnd - l.opStart - 1,
-		}
+		uvScale, uvOffset := texSpaceTransform(f32.FRect(region), textureSize)
+		ops[l.opStart] = imageOp{clip: l.clip, material: material{material: materialTexture, tex: tex, uvTrans: f32.AffineId().Scale(f32.Point{}, uvScale).Offset(uvOffset), opacity: l.opacity}, layerOps: l.opEnd - l.opStart - 1}
 	}
 	if fbo != -1 {
 		r.ctx.EndRenderPass()
 		r.ctx.PrepareTexture(r.layerFBOs.fbos[fbo].tex)
 	}
+}
+
+func (r *renderer) clearFloatSlot(place placement, size image.Point, value float32) {
+	r.ctx.Viewport(place.Pos.X, place.Pos.Y, size.X, size.Y)
+	r.ctx.BindPipeline(r.clearPipeline)
+	r.ctx.BindVertexBuffer(r.blitter.quadVerts, 0)
+	u := r.blitter.colUniforms
+	u.transform = [4]float32{1, 1, 0, 0}
+	u.opacity, u.fbo = 1, 1
+	u.color = f32color.RGBA{R: value}
+	r.blitter.pipelines[1][materialColor].UploadUniforms(r.ctx)
+	r.ctx.DrawArrays(0, 4)
 }
 
 func (d *drawOps) reset(viewport image.Point) {
@@ -1001,11 +1110,15 @@ func (d *drawOps) collect(root *op.Ops, viewport image.Point) {
 
 func (d *drawOps) buildPaths(ctx driver.Device) {
 	for _, p := range d.pathOps {
+		if p.clip.Empty() {
+			continue
+		}
 		if v, exists := d.pathCache.get(p.pathKey); !exists || v.data.data == nil {
 			data := buildPath(ctx, p.pathVerts)
 			d.pathCache.put(p.pathKey, opCacheValue{
-				data:   data,
-				bounds: p.bounds,
+				data:      data,
+				bounds:    p.bounds,
+				primitive: p.primitive,
 			})
 		}
 		p.pathVerts = nil
@@ -1050,7 +1163,8 @@ func (d *drawOps) save(id int, state f32.Affine2D) {
 }
 
 func (k opKey) SetTransform(t f32.Affine2D) opKey {
-	sx, hx, _, hy, sy, _ := t.Elems()
+	sx, hx, ox, hy, sy, oy := t.Elems()
+	k.ox, k.oy = ox, oy
 	k.sx = sx
 	k.hx = hx
 	k.hy = hy
@@ -1093,6 +1207,7 @@ loop:
 			}
 			lidx := len(d.layers)
 			d.layers = append(d.layers, opacityLayer{
+				key:     encOp.Key,
 				opacity: opacity,
 				parent:  parent,
 				depth:   depth,
@@ -1122,16 +1237,26 @@ loop:
 			quads.key.outline = op.Outline
 			bounds := f32.FRect(op.Bounds)
 			trans, off := transformOffset(state.t)
-			if len(quads.aux) > 0 {
+			rectangular := len(quads.aux) == 0
+			if !rectangular {
 				// There is a clipping path, build the gpu data and update the
 				// cache key such that it will be equal only if the transform is the
 				// same also. Use cached data if we have it.
 				quads.key = quads.key.SetTransform(trans)
-				if v, ok := d.pathCache.get(quads.key); ok {
-					// Since the GPU data exists in the cache aux will not be used.
-					// Why is this not used for the offset shapes?
+				if v, ok := d.pathCache.get(quads.key); ok && (v.data.data != nil || v.verts != nil) {
+					// Reuse converted geometry, including CPU-only paths that were
+					// previously hidden or rendered with direct coverage.
 					bounds = v.bounds
+					if v.data.data == nil {
+						quads.aux = v.verts
+					}
 				} else {
+					var primitive analyticPrimitive
+					if quads.key.outline && quads.key.strokeWidth == 0 {
+						if p, ok := recognizeAnalyticPrimitive(quads.aux); ok {
+							primitive = transformedPrimitive(p, trans)
+						}
+					}
 					var pathData []byte
 					pathData, bounds = d.buildVerts(
 						quads.aux, trans, quads.key.outline, quads.key.strokeWidth,
@@ -1139,7 +1264,7 @@ loop:
 					quads.aux = pathData
 					// add it to the cache, without GPU data, so the transform can be
 					// reused.
-					d.pathCache.put(quads.key, opCacheValue{bounds: bounds})
+					d.pathCache.put(quads.key, opCacheValue{bounds: bounds, primitive: primitive, verts: pathData, vertsPending: true})
 				}
 			} else {
 				quads.aux, bounds, _ = d.boundsForTransformedRect(bounds, trans)
@@ -1147,6 +1272,15 @@ loop:
 				quads.key = quads.key.SetTransform(trans)
 			}
 			d.addClipPath(&state, quads.aux, quads.key, bounds, off)
+			if v, ok := d.pathCache.get(quads.key); ok {
+				state.cpath.primitive = v.primitive
+			}
+			if rectangular {
+				_, hx, _, hy, _, _ := trans.Elems()
+				if hx == 0 && hy == 0 {
+					state.cpath.primitive = analyticPrimitive{kind: analyticRRect, bounds: bounds}
+				}
+			}
 			quads = quadsOp{}
 		case ops.TypePopClip:
 			state.cpath = state.cpath.parent
@@ -1197,6 +1331,10 @@ loop:
 				k := opKey{Key: encOp.Key}
 				k = k.SetTransform(t)
 				d.addClipPath(&state, clipData, k, bnd, off)
+				_, hx, _, hy, _, _ := t.Elems()
+				if hx == 0 && hy == 0 {
+					state.cpath.primitive = analyticPrimitive{kind: analyticRRect, bounds: bnd}
+				}
 			}
 
 			bounds := cl.Round()
@@ -1313,6 +1451,9 @@ func (d *drawState) materialFor(rect f32.Rectangle, off f32.Point, partTrans f32
 func (r *renderer) uploadImages(cache *textureCache, ops []imageOp) {
 	for i := range ops {
 		img := &ops[i]
+		if img.culled {
+			continue
+		}
 		m := img.material
 		if m.material == materialTexture {
 			img.material.tex = r.texHandle(cache, m.data)
@@ -1322,6 +1463,9 @@ func (r *renderer) uploadImages(cache *textureCache, ops []imageOp) {
 
 func (r *renderer) prepareDrawOps(ops []imageOp) {
 	for _, img := range ops {
+		if img.culled {
+			continue
+		}
 		m := img.material
 		switch m.material {
 		case materialTexture:
@@ -1342,8 +1486,6 @@ func (r *renderer) prepareDrawOps(ops []imageOp) {
 }
 
 func (r *renderer) drawOps(isFBO bool, opOff, viewport image.Point, ops []imageOp, embedRegions *EmbedRegions) {
-	var coverTex driver.Texture
-
 	if embedRegions != nil {
 		for i := 0; i < len(ops); i++ {
 			img := ops[i]
@@ -1372,10 +1514,22 @@ func (r *renderer) drawOps(isFBO bool, opOff, viewport image.Point, ops []imageO
 		}
 	}
 
+	if r.batch != nil && !r.optimDisabled {
+		r.batch.draw(r, isFBO, opOff, viewport, ops)
+		return
+	}
+	r.drawOpsUnbatched(isFBO, opOff, viewport, ops)
+}
+
+func (r *renderer) drawOpsUnbatched(isFBO bool, opOff, viewport image.Point, ops []imageOp) {
+	var coverTex driver.Texture
 	// Render pass: draw all operations.
 	for i := 0; i < len(ops); i++ {
 		img := ops[i]
 		i += img.layerOps
+		if img.culled {
+			continue
+		}
 		m := img.material
 		switch m.material {
 		case materialTexture:
@@ -1508,11 +1662,11 @@ func gradientSpaceTransform(clip image.Rectangle, off f32.Point, stop1, stop2 f3
 	// TODO: optimize
 	zp := f32.Point{}
 	return f32.AffineId().
-		Scale(zp, layout.FPt(clip.Size())). // scale to pixel space
+		Scale(zp, layout.FPt(clip.Size())).            // scale to pixel space
 		Offset(zp.Sub(off).Add(layout.FPt(clip.Min))). // offset to clip space
-		Offset(zp.Sub(stop1)). // offset to first stop point
-		Rotate(zp, a). // rotate to align gradient
-		Scale(zp, f32.Pt(1/l, 1/l)) // scale gradient to right size
+		Offset(zp.Sub(stop1)).                         // offset to first stop point
+		Rotate(zp, a).                                 // rotate to align gradient
+		Scale(zp, f32.Pt(1/l, 1/l))                    // scale gradient to right size
 }
 
 // clipSpaceTransform returns the scale and offset that transforms the given

@@ -34,12 +34,15 @@ type opCache struct {
 }
 
 type opCacheValue struct {
-	data pathData
+	primitive analyticPrimitive
+	verts     []byte // Retain converted vertices for CPU-only paths.
+	data      pathData
 
 	bounds f32.Rectangle
 	// the fields below are handled by opCache
-	key  opKey
-	keep bool
+	key          opKey
+	keep         bool
+	vertsPending bool // The vertices still refer to the current frame arena.
 }
 
 func newTextureCache() *textureCache {
@@ -131,12 +134,21 @@ func (r *opCache) frame() {
 	for i, v := range r.cache {
 		r.cache[i].keep = false
 		if v.keep {
+			// Live GPU paths have discarded their CPU vertices. Retain only
+			// CPU-only geometry before the next frame reuses the arena.
+			if v.vertsPending {
+				if v.data.data == nil && v.verts != nil {
+					r.cache[i].verts = append([]byte(nil), v.verts...)
+				}
+				r.cache[i].vertsPending = false
+			}
 			continue
 		}
 		if v.data.data != nil {
 			v.data.release()
 			r.cache[i].data.data = nil
 		}
+		r.cache[i].verts = nil
 		delete(r.index, v.key)
 		r.freelist = append(r.freelist, i)
 	}

@@ -18,8 +18,9 @@ import (
 )
 
 type pointerQueue struct {
-	hitTree []hitNode
-	areas   []areaNode
+	hitTree    []hitNode
+	areas      []areaNode
+	hitScratch []event.Tag
 
 	semantic struct {
 		idsAssigned bool
@@ -785,14 +786,17 @@ func (q *pointerQueue) Push(handlers map[event.Tag]*handler, state pointerState,
 
 // deliverScrollEvent delivers scroll events to the handlers hit by the event coordinate.
 func (q *pointerQueue) deliverScrollEvent(handlers map[event.Tag]*handler, evts []taggedEvent, e pointer.Event) []taggedEvent {
-	var hits []event.Tag
+	hits := q.hitScratch[:0]
 	q.hitTest(e.Position, func(n *hitNode) bool {
 		if _, ok := handlers[n.tag]; ok {
 			hits = addHandler(hits, n.tag)
 		}
 		return true
 	})
-	return q.deliverEvent(handlers, pointerInfo{handlers: hits}, evts, e)
+	evts = q.deliverEvent(handlers, pointerInfo{handlers: hits}, evts, e)
+	clear(hits)
+	q.hitScratch = hits[:0]
+	return evts
 }
 
 func (q *pointerQueue) deliverEvent(handlers map[event.Tag]*handler, p pointerInfo, evts []taggedEvent, e pointer.Event) []taggedEvent {
@@ -828,6 +832,7 @@ func (q *pointerQueue) deliverEnterLeaveEvents(handlers map[event.Tag]*handler, 
 	if e.Kind == pointer.Leave || e.Source != pointer.Mouse && !p.pressed && e.Kind != pointer.Press {
 		// Consider non-mouse pointers leaving when they're released.
 	} else {
+		hits = q.hitScratch[:0]
 		var transSrc *pointerFilter
 		if p.dataSource != nil {
 			transSrc = &handlers[p.dataSource].filter.pointer
@@ -856,8 +861,18 @@ func (q *pointerQueue) deliverEnterLeaveEvents(handlers map[event.Tag]*handler, 
 			}
 			return true
 		})
+		q.hitScratch = hits
+		// Routing states are immutable snapshots. Only changed hits need
+		// their own storage; scratch space must never escape into a state.
+		if slices.Equal(hits, p.entered) {
+			hits = p.entered
+		} else {
+			hits = slices.Clone(hits)
+		}
+		clear(q.hitScratch)
+		q.hitScratch = q.hitScratch[:0]
 		if !p.pressed {
-			changed = true
+			changed = !slices.Equal(p.handlers, hits)
 			p.handlers = hits
 		}
 	}

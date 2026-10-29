@@ -40,6 +40,7 @@ type Backend struct {
 	storage     [storageBindings]*buffer
 
 	outputFBO gl.Framebuffer
+	outputTex texture
 	sRGBFBO   *SRGBFBO
 
 	// vertArray is bound during a frame. We don't need it, but
@@ -51,7 +52,7 @@ type Backend struct {
 type glState struct {
 	drawFBO     gl.Framebuffer
 	readFBO     gl.Framebuffer
-	vertAttribs [5]struct {
+	vertAttribs [8]struct {
 		obj        gl.Buffer
 		enabled    bool
 		size       int
@@ -283,7 +284,8 @@ func (b *Backend) BeginFrame(target driver.RenderTarget, clear bool, viewport im
 	if b.sRGBFBO != nil && !clear {
 		b.clearOutput(0, 0, 0, 0)
 	}
-	return &texture{backend: b, fbo: renderFBO, hasFBO: true, foreign: true}
+	b.outputTex = texture{backend: b, fbo: renderFBO, hasFBO: true, foreign: true}
+	return &b.outputTex
 }
 
 func (b *Backend) EndFrame() {
@@ -295,7 +297,7 @@ func (b *Backend) EndFrame() {
 			b.BlendFunc(driver.BlendFactorOne, driver.BlendFactorOneMinusSrcAlpha)
 			b.SetBlend(true)
 		}
-		b.sRGBFBO.Blit()
+		b.sRGBFBO.Blit(b.clear && !b.sharedCtx && !b.outputFBO.Valid())
 	}
 	if b.sharedCtx {
 		b.restoreState(b.savedState)
@@ -1372,3 +1374,6 @@ func firstBufferType(typ driver.BufferBinding) gl.Enum {
 		panic("unsupported buffer type")
 	}
 }
+
+// SupportsRasterBatch enables the generated GLSL cover batching shaders.
+func (b *Backend) SupportsRasterBatch() bool { return true }

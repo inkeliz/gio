@@ -441,12 +441,13 @@ func (f *filter) Reset() {
 }
 
 func (q *Router) processEvent(e event.Event, system bool) {
+	original := e
 	state := q.lastState()
 	switch e := e.(type) {
 	case pointer.Event:
 		pstate, evts := q.pointer.queue.Push(q.handlers, state.pointerState, e)
 		state.pointerState = pstate
-		q.changeState(e, state, evts)
+		q.changeState(original, state, evts)
 	case key.Event:
 		var evts []taggedEvent
 		if q.key.filter.Matches(state.keyState.focus, e, system) {

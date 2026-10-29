@@ -6,6 +6,7 @@ package gpu
 // Pathfinder (https://github.com/servo/pathfinder).
 
 import (
+	"crypto/sha256"
 	"encoding/binary"
 	"image"
 	"math"
@@ -99,6 +100,7 @@ type FBO struct {
 }
 
 type pathData struct {
+	digest  [32]byte
 	ncurves int
 	data    driver.Buffer
 }
@@ -323,6 +325,7 @@ func buildPath(ctx driver.Device, p []byte) pathData {
 		panic(err)
 	}
 	return pathData{
+		digest:  sha256.Sum256(p),
 		ncurves: len(p) / vertStride,
 		data:    buf,
 	}

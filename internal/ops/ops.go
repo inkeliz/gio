@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"image"
 	"math"
+	"slices"
 
 	"gioui.org/f32"
 	"gioui.org/internal/byteslice"
@@ -186,6 +187,11 @@ func Reset(o *Ops) {
 	o.stringRefs = o.stringRefs[:0]
 	o.nextStateID = 0
 	o.version++
+}
+
+// Grow reserves space for n additional operation bytes without changing the list.
+func Grow(o *Ops, n int) {
+	o.data = slices.Grow(o.data, n)
 }
 
 func Write(o *Ops, n int) []byte {

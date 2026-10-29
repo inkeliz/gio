@@ -24,6 +24,8 @@ import (
 	giofont "gioui.org/font"
 	"gioui.org/font/opentype"
 	"gioui.org/internal/debug"
+	"gioui.org/internal/ops"
+	"gioui.org/internal/scene"
 	"gioui.org/io/system"
 	"gioui.org/op"
 	"gioui.org/op/clip"
@@ -221,6 +223,9 @@ type shaperImpl struct {
 	segmenter     shaping.Segmenter
 	outScratchBuf []shaping.Output
 	scratchRunes  []rune
+
+	// Reuse decoded glyph data across text runs whose glyph positions change.
+	glyphDataCache lru[GlyphID, font.GlyphData]
 
 	// bitmapGlyphCache caches extracted bitmap glyph images.
 	bitmapGlyphCache bitmapCache
@@ -542,9 +547,38 @@ func alignWidth(minWidth int, lines []line) int {
 	return minWidth
 }
 
+func (s *shaperImpl) glyphData(id GlyphID, face *font.Face, gid font.GID) font.GlyphData {
+	if data, ok := s.glyphDataCache.Get(id); ok {
+		return data
+	}
+	data := face.GlyphData(gid)
+	s.glyphDataCache.Put(id, data)
+	return data
+}
+
 // Shape converts the provided glyphs into a path. The path will enclose the forms
 // of all vector glyphs.
 func (s *shaperImpl) Shape(pathOps *op.Ops, gs []Glyph) clip.PathSpec {
+	// Longer batches retain one-pass decoding instead of churning the glyph cache.
+	if len(gs) <= maxSize {
+		// Reserve a conservative bound before recording the fresh immutable path.
+		// Each outline segment and glyph move emits at most one command, and a
+		// closing gap may be needed. Degenerate segments can use less space.
+		commands := 1 // The closing contour may need a gap.
+		for _, g := range gs {
+			_, faceIdx, gid := splitGlyphID(g.ID)
+			if faceIdx >= len(s.faces) || s.faces[faceIdx] == nil {
+				continue
+			}
+			switch data := s.glyphData(g.ID, s.faces[faceIdx], gid).(type) {
+			case font.GlyphOutline:
+				commands += len(data.Segments) + 1
+			case font.GlyphSVG:
+				commands += len(data.Outline.Segments) + 1
+			}
+		}
+		ops.Grow(&pathOps.Internal, ops.TypeMacroLen+ops.TypeAuxLen+commands*(scene.CommandSize+4))
+	}
 	var lastPos f32.Point
 	var x fixed.Int26_6
 	var builder clip.Path
@@ -562,7 +596,7 @@ func (s *shaperImpl) Shape(pathOps *op.Ops, gs []Glyph) clip.PathSpec {
 			continue
 		}
 		scaleFactor := fixedToFloat(ppem) / float32(face.Upem())
-		glyphData := face.GlyphData(gid)
+		glyphData := s.glyphData(g.ID, face, gid)
 
 		var outline font.GlyphOutline
 		switch glyphData := glyphData.(type) {
@@ -648,7 +682,7 @@ func (s *shaperImpl) Bitmaps(ops *op.Ops, gs []Glyph) op.CallOp {
 		if face == nil {
 			continue
 		}
-		glyphData := face.GlyphData(gid)
+		glyphData := s.glyphData(g.ID, face, gid)
 		switch glyphData := glyphData.(type) {
 		case font.GlyphBitmap:
 			var imgOp paint.ImageOp
