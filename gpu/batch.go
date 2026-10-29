@@ -24,6 +24,13 @@ type batchVertex struct {
 	shape, half    [2]float32
 	radii          [4]float32
 }
+
+// The plain fragment program consumes only color and optional mask UVs.
+type colorBatchVertex struct {
+	pos, cover [2]float32
+	color      [4]float32
+}
+
 type batchUniforms struct {
 	transform                  [4]float32
 	fbo, material, clipMode, _ float32
@@ -41,8 +48,9 @@ type drawBatch struct {
 	indices   driver.Buffer
 	white     driver.Texture
 	vertices  []batchVertex
-	buffers   [9][]driver.Buffer
-	used      [9]int
+	colors    []colorBatchVertex
+	buffers   [2][9][]driver.Buffer
+	used      [2][9]int
 	count     int
 	key       batchKey
 	first     [1]imageOp
@@ -55,7 +63,7 @@ func newDrawBatch(ctx driver.Device) *drawBatch {
 	if !ok || !supported.SupportsRasterBatch() {
 		return nil
 	}
-	b := &drawBatch{ctx: ctx, uniforms: new(batchUniforms), vertices: make([]batchVertex, batchQuads*4)}
+	b := &drawBatch{ctx: ctx, uniforms: new(batchUniforms), vertices: make([]batchVertex, batchQuads*4), colors: make([]colorBatchVertex, batchQuads*4)}
 	layout := driver.VertexLayout{Stride: int(unsafe.Sizeof(batchVertex{}))}
 	for _, input := range []struct{ size, offset int }{
 		{2, int(unsafe.Offsetof(batchVertex{}.pos))}, {2, int(unsafe.Offsetof(batchVertex{}.uv))},
@@ -66,7 +74,18 @@ func newDrawBatch(ctx driver.Device) *drawBatch {
 		layout.Inputs = append(layout.Inputs, driver.InputDesc{Type: shader.DataTypeFloat, Size: input.size, Offset: input.offset})
 	}
 	for analytic, source := range []shader.Sources{gio.Shader_batch_plain_frag, gio.Shader_batch_frag} {
-		vs, fs, err := newShaders(ctx, gio.Shader_batch_vert, source)
+		vertexSource := gio.Shader_batch_vert
+		vertexLayout := layout
+		if analytic == 0 {
+			// Other vertex outputs are unused by the linked plain fragment shader.
+			vertexSource.Inputs = []shader.InputLocation{vertexSource.Inputs[0], vertexSource.Inputs[2], vertexSource.Inputs[3]}
+			vertexLayout = driver.VertexLayout{Stride: int(unsafe.Sizeof(colorBatchVertex{})), Inputs: []driver.InputDesc{
+				{Type: shader.DataTypeFloat, Size: 2, Offset: int(unsafe.Offsetof(colorBatchVertex{}.pos))},
+				{Type: shader.DataTypeFloat, Size: 2, Offset: int(unsafe.Offsetof(colorBatchVertex{}.cover))},
+				{Type: shader.DataTypeFloat, Size: 4, Offset: int(unsafe.Offsetof(colorBatchVertex{}.color))},
+			}}
+		}
+		vs, fs, err := newShaders(ctx, vertexSource, source)
 		if err != nil {
 			b.release()
 			return nil
@@ -79,7 +98,7 @@ func newDrawBatch(ctx driver.Device) *drawBatch {
 				if opaque != 0 {
 					blend.DstFactor = driver.BlendFactorZero
 				}
-				p, err := ctx.NewPipeline(driver.PipelineDesc{VertexShader: vs, FragmentShader: fs, VertexLayout: layout, BlendDesc: blend, PixelFormat: format, Topology: driver.TopologyTriangles})
+				p, err := ctx.NewPipeline(driver.PipelineDesc{VertexShader: vs, FragmentShader: fs, VertexLayout: vertexLayout, BlendDesc: blend, PixelFormat: format, Topology: driver.TopologyTriangles})
 				if err != nil {
 					b.release()
 					return nil
@@ -126,9 +145,11 @@ func (b *drawBatch) release() {
 			}
 		}
 	}
-	for _, pool := range b.buffers {
-		for _, v := range pool {
-			v.Release()
+	for _, formats := range b.buffers {
+		for _, pool := range formats {
+			for _, v := range pool {
+				v.Release()
+			}
 		}
 	}
 	if b.indices != nil {
@@ -148,21 +169,33 @@ func (b *drawBatch) flush(r *renderer, fbo bool, offset, viewport image.Point) {
 		b.count = 0
 		return
 	}
+	analytic := 0
+	stride := int(unsafe.Sizeof(colorBatchVertex{}))
+	if b.key.clipMode > 1 {
+		analytic, stride = 1, int(unsafe.Sizeof(batchVertex{}))
+	}
 	bucket := bits.Len(uint(b.count - 1))
-	used := b.used[bucket]
+	used := b.used[analytic][bucket]
 	capacity := 1 << bucket
-	if used == len(b.buffers[bucket]) {
-		v, err := b.ctx.NewBuffer(driver.BufferBindingVertices, capacity*4*int(unsafe.Sizeof(batchVertex{})))
+	if used == len(b.buffers[analytic][bucket]) {
+		v, err := b.ctx.NewBuffer(driver.BufferBindingVertices, capacity*4*stride)
 		if err != nil {
 			panic(err)
 		}
-		b.buffers[bucket] = append(b.buffers[bucket], v)
+		b.buffers[analytic][bucket] = append(b.buffers[analytic][bucket], v)
 	}
-	buf := b.buffers[bucket][used]
-	b.used[bucket]++
-	// Upload the complete bucket to orphan its previous storage, avoiding a
-	// mid-frame BufferSubData wait on vertices still consumed by the GPU.
-	buf.Upload(byteslice.Slice(b.vertices[:capacity*4]))
+	buf := b.buffers[analytic][bucket][used]
+	b.used[analytic][bucket]++
+	data := byteslice.Slice(b.colors[:capacity*4])
+	if analytic != 0 {
+		data = byteslice.Slice(b.vertices[:capacity*4])
+	}
+	if stream, ok := buf.(interface{ UploadDiscard([]byte) }); ok {
+		stream.UploadDiscard(data[:b.count*4*stride])
+	} else {
+		// Keep full uploads for backends that cannot explicitly orphan storage.
+		buf.Upload(data)
+	}
 	fi, opaque := 0, 0
 	if fbo {
 		fi = 1
@@ -172,10 +205,6 @@ func (b *drawBatch) flush(r *renderer, fbo bool, offset, viewport image.Point) {
 	}
 	b.uniforms.material = float32(b.key.material)
 	b.uniforms.clipMode = float32(b.key.clipMode)
-	analytic := 0
-	if b.key.clipMode > 1 {
-		analytic = 1
-	}
 	p := b.pipelines[analytic][fi][opaque]
 	b.ctx.BindPipeline(p.pipeline)
 	p.UploadUniforms(b.ctx)
@@ -257,13 +286,22 @@ func (b *drawBatch) draw(r *renderer, fbo bool, offset, viewport image.Point, pa
 			col = f32color.RGBA{}
 		}
 		rect := img.clip.Add(offset)
-		center := img.analytic.bounds.Min.Add(img.analytic.bounds.Max).Mul(.5)
-		half := img.analytic.bounds.Size().Mul(.5)
+		color, color2 := rgba(col, m.opacity), rgba(col2, m.opacity)
+		analytic := key.clipMode > 1
+		var center, half f32.Point
+		if analytic {
+			center = img.analytic.bounds.Min.Add(img.analytic.bounds.Max).Mul(.5)
+			half = img.analytic.bounds.Size().Mul(.5)
+		}
 		for corner := 0; corner < 4; corner++ {
 			u, v := float32(corner&1), float32((corner>>1)&1)
 			x, y := float32(rect.Min.X)+u*float32(rect.Dx()), float32(rect.Min.Y)+v*float32(rect.Dy())
+			if !analytic {
+				b.colors[b.count*4+corner] = colorBatchVertex{pos: [2]float32{x, y}, cover: [2]float32{u*scale.X + off.X, v*scale.Y + off.Y}, color: color}
+				continue
+			}
 			uv := m.uvTrans.Transform(f32.Pt(u, v))
-			b.vertices[b.count*4+corner] = batchVertex{pos: [2]float32{x, y}, uv: [2]float32{uv.X, uv.Y}, cover: [2]float32{u*scale.X + off.X, v*scale.Y + off.Y}, color: rgba(col, m.opacity), color2: rgba(col2, m.opacity), shape: [2]float32{x - float32(offset.X) - center.X, y - float32(offset.Y) - center.Y}, half: [2]float32{half.X, half.Y}, radii: img.analytic.radii}
+			b.vertices[b.count*4+corner] = batchVertex{pos: [2]float32{x, y}, uv: [2]float32{uv.X, uv.Y}, cover: [2]float32{u*scale.X + off.X, v*scale.Y + off.Y}, color: color, color2: color2, shape: [2]float32{x - float32(offset.X) - center.X, y - float32(offset.Y) - center.Y}, half: [2]float32{half.X, half.Y}, radii: img.analytic.radii}
 		}
 		b.count++
 	}

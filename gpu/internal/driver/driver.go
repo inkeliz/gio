@@ -112,6 +112,8 @@ type Caps struct {
 	BottomLeftOrigin bool
 	Features         Features
 	MaxTextureSize   int
+	// Bytes per TextureFormatFloat texel; zero means unknown.
+	FloatRenderTargetBytes int
 }
 
 type VertexShader interface {

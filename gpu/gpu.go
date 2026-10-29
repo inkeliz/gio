@@ -107,7 +107,7 @@ type stencilKey struct {
 }
 
 type drawOps struct {
-	reader              ops.Reader
+	reader              drawReader
 	states              []f32.Affine2D
 	transStack          []f32.Affine2D
 	layers              []opacityLayer
@@ -173,13 +173,15 @@ type pathOp struct {
 	bounds f32.Rectangle
 	// intersect is the intersection of bounds and all
 	// previous clip bounds.
-	intersect f32.Rectangle
-	pathKey   opKey
-	path      bool
-	pathVerts []byte
-	primitive analyticPrimitive
-	parent    *pathOp
-	place     placement
+	intersect  f32.Rectangle
+	pathKey    opKey
+	cacheIndex int // Path cache slot plus one, valid until the frame ends.
+	path       bool
+	pathRaw    bool // Rounded-rectangle commands, converted only if a paint needs a mask.
+	pathVerts  []byte
+	primitive  analyticPrimitive
+	parent     *pathOp
+	place      placement
 }
 
 type imageOp struct {
@@ -428,6 +430,7 @@ func (g *gpu) Clear(col color.NRGBA) {
 }
 
 func (g *gpu) Release() {
+	g.drawOps.reader = drawReader{}
 	g.renderer.release()
 	g.drawOps.pathCache.release()
 	g.cache.release()
@@ -827,8 +830,8 @@ func (r *renderer) stencilClips(pathCache *opCache, ops []*pathOp) {
 	var preserved bool
 	for _, p := range ops {
 		origin := image.Pt(int(p.off.X), int(p.off.Y))
-		v, _ := pathCache.get(p.pathKey)
-		key := stencilKey{v.data.digest, p.clip.Sub(origin), p.place}
+		data := pathCache.cache[p.cacheIndex-1].data
+		key := stencilKey{data.digest, p.clip.Sub(origin), p.place}
 		if _, duplicate := r.stencilKeys[key]; duplicate {
 			continue
 		}
@@ -866,7 +869,7 @@ func (r *renderer) stencilClips(pathCache *opCache, ops []*pathOp) {
 		}
 		r.ctx.BindPipeline(r.pather.stenciler.pipeline.pipeline.pipeline)
 		r.ctx.BindIndexBuffer(r.pather.stenciler.indexBuf)
-		r.pather.stencilPath(p.clip, p.off, p.place.Pos, v.data)
+		r.pather.stencilPath(p.clip, p.off, p.place.Pos, data)
 	}
 	if fbo != -1 {
 		r.ctx.EndRenderPass()
@@ -1113,13 +1116,21 @@ func (d *drawOps) buildPaths(ctx driver.Device) {
 		if p.clip.Empty() {
 			continue
 		}
-		if v, exists := d.pathCache.get(p.pathKey); !exists || v.data.data == nil {
+		if p.cacheIndex == 0 {
+			p.cacheIndex = d.pathCache.get(p.pathKey)
+		}
+		if p.cacheIndex == 0 || d.pathCache.cache[p.cacheIndex-1].data.data == nil {
+			if p.pathRaw {
+				p.pathVerts, _ = d.buildVerts(p.pathVerts, f32.AffineId(), true, 0)
+			}
 			data := buildPath(ctx, p.pathVerts)
-			d.pathCache.put(p.pathKey, opCacheValue{
-				data:      data,
-				bounds:    p.bounds,
-				primitive: p.primitive,
-			})
+			v := opCacheValue{data: data, bounds: p.bounds, primitive: p.primitive}
+			if p.cacheIndex == 0 {
+				p.cacheIndex = d.pathCache.put(p.pathKey, v)
+			} else {
+				v.keep, v.key = true, p.pathKey
+				d.pathCache.cache[p.cacheIndex-1] = v
+			}
 		}
 		p.pathVerts = nil
 	}
@@ -1172,7 +1183,7 @@ func (k opKey) SetTransform(t f32.Affine2D) opKey {
 	return k
 }
 
-func (d *drawOps) collectOps(r *ops.Reader, viewport f32.Rectangle) {
+func (d *drawOps) collectOps(r *drawReader, viewport f32.Rectangle) {
 	var quads quadsOp
 	state := drawState{
 		t: f32.AffineId(),
@@ -1186,9 +1197,15 @@ func (d *drawOps) collectOps(r *ops.Reader, viewport f32.Rectangle) {
 	reset()
 loop:
 	for encOp, ok := r.Decode(); ok; encOp, ok = r.Decode() {
-		switch ops.OpType(encOp.Data[0]) {
+		switch encOp.typ {
 		case ops.TypeTransform:
-			dop, push := ops.DecodeTransform(encOp.Data)
+			var dop f32.Affine2D
+			var push bool
+			if p := r.current; p != nil {
+				dop, push = p.transforms[encOp.arg], encOp.push
+			} else {
+				dop, push = ops.DecodeTransform(r.encoded.Data)
+			}
 			if push {
 				d.transStack = append(d.transStack, state.t)
 			}
@@ -1199,7 +1216,7 @@ loop:
 			d.transStack = d.transStack[:n-1]
 
 		case ops.TypePushOpacity:
-			opacity := ops.DecodeOpacity(encOp.Data)
+			opacity := r.value(encOp)
 			parent := -1
 			depth := len(d.opacityStack)
 			if depth > 0 {
@@ -1207,7 +1224,7 @@ loop:
 			}
 			lidx := len(d.layers)
 			d.layers = append(d.layers, opacityLayer{
-				key:     encOp.Key,
+				key:     encOp.key,
 				opacity: opacity,
 				parent:  parent,
 				depth:   depth,
@@ -1221,34 +1238,48 @@ loop:
 			d.opacityStack = d.opacityStack[:n-1]
 
 		case ops.TypeStroke:
-			quads.key.strokeWidth = decodeStrokeOp(encOp.Data)
+			quads.key.strokeWidth = r.value(encOp)
 
 		case ops.TypePath:
 			encOp, ok = r.Decode()
 			if !ok {
 				break loop
 			}
-			quads.aux = encOp.Data[ops.TypeAuxLen:]
-			quads.key.Key = encOp.Key
+			quads.aux = r.path(encOp)
+			quads.key.Key = encOp.key
 
 		case ops.TypeClip:
-			var op ops.ClipOp
-			op.Decode(encOp.Data)
-			quads.key.outline = op.Outline
-			bounds := f32.FRect(op.Bounds)
+			var clip decodedClip
+			if p := r.current; p != nil {
+				clip = p.clips[encOp.arg]
+			} else {
+				var c ops.ClipOp
+				c.Decode(r.encoded.Data)
+				clip = decodedClip{bounds: f32.FRect(c.Bounds), outline: c.Outline}
+			}
+			bounds := clip.bounds
+			quads.key.outline = clip.outline
 			trans, off := transformOffset(state.t)
 			rectangular := len(quads.aux) == 0
+			cacheIndex := 0
+			pathRaw := false
 			if !rectangular {
 				// There is a clipping path, build the gpu data and update the
 				// cache key such that it will be equal only if the transform is the
 				// same also. Use cached data if we have it.
 				quads.key = quads.key.SetTransform(trans)
-				if v, ok := d.pathCache.get(quads.key); ok && (v.data.data != nil || v.verts != nil) {
+				cacheIndex = d.pathCache.get(quads.key)
+				if i := cacheIndex; i != 0 && (d.pathCache.cache[i-1].data.data != nil || d.pathCache.cache[i-1].verts != nil || d.pathCache.cache[i-1].primitive.kind == analyticRRect) {
 					// Reuse converted geometry, including CPU-only paths that were
 					// previously hidden or rendered with direct coverage.
+					v := &d.pathCache.cache[i-1]
 					bounds = v.bounds
 					if v.data.data == nil {
-						quads.aux = v.verts
+						if v.verts != nil {
+							quads.aux = v.verts
+						} else {
+							pathRaw = true
+						}
 					}
 				} else {
 					var primitive analyticPrimitive
@@ -1257,23 +1288,32 @@ loop:
 							primitive = transformedPrimitive(p, trans)
 						}
 					}
-					var pathData []byte
-					pathData, bounds = d.buildVerts(
-						quads.aux, trans, quads.key.outline, quads.key.strokeWidth,
-					)
-					quads.aux = pathData
-					// add it to the cache, without GPU data, so the transform can be
-					// reused.
-					d.pathCache.put(quads.key, opCacheValue{bounds: bounds, primitive: primitive, verts: pathData, vertsPending: true})
+					if primitive.kind == analyticRRect && trans == f32.AffineId() {
+						// Rounded-rectangle extrema are known before vertex conversion.
+						// Analytic, cached and culled paints may never need these vertices.
+						bounds, pathRaw = primitive.bounds, true
+						cacheIndex = d.pathCache.put(quads.key, opCacheValue{bounds: bounds, primitive: primitive})
+					} else {
+						var pathData []byte
+						pathData, bounds = d.buildVerts(
+							quads.aux, trans, quads.key.outline, quads.key.strokeWidth,
+						)
+						quads.aux = pathData
+						// Retain converted geometry when bounds require conversion.
+						cacheIndex = d.pathCache.put(quads.key, opCacheValue{bounds: bounds, primitive: primitive, verts: pathData, vertsPending: true})
+					}
 				}
 			} else {
 				quads.aux, bounds, _ = d.boundsForTransformedRect(bounds, trans)
-				quads.key = opKey{Key: encOp.Key}
+				quads.key = opKey{Key: encOp.key}
 				quads.key = quads.key.SetTransform(trans)
+				cacheIndex = d.pathCache.get(quads.key)
 			}
 			d.addClipPath(&state, quads.aux, quads.key, bounds, off)
-			if v, ok := d.pathCache.get(quads.key); ok {
-				state.cpath.primitive = v.primitive
+			state.cpath.cacheIndex = cacheIndex
+			state.cpath.pathRaw = pathRaw
+			if cacheIndex != 0 {
+				state.cpath.primitive = d.pathCache.cache[cacheIndex-1].primitive
 			}
 			if rectangular {
 				_, hx, _, hy, _, _ := trans.Elems()
@@ -1287,20 +1327,20 @@ loop:
 
 		case ops.TypeColor:
 			state.matType = materialColor
-			state.color = decodeColorOp(encOp.Data)
+			state.color = r.color(encOp)
 		case ops.TypeLinearGradient:
 			state.matType = materialLinearGradient
-			op := decodeLinearGradientOp(encOp.Data)
+			op := r.gradient(encOp)
 			state.stop1 = op.stop1
 			state.stop2 = op.stop2
 			state.color1 = op.color1
 			state.color2 = op.color2
 		case ops.TypeImage:
 			state.matType = materialTexture
-			state.image = decodeImageOp(encOp.Data, encOp.Refs)
+			state.image = r.image(encOp)
 		case ops.TypeEmbed:
 			state.matType = materialEmbed
-			state.embed = decodeEmbedOp(encOp.Data, encOp.Refs)
+			state.embed = decodeEmbedOp(r.encoded.Data, r.encoded.Refs)
 		case ops.TypePaint:
 			// Transform (if needed) the painting rectangle and if so generate a clip path,
 			// for those cases also compute a partialTrans that maps texture coordinates between
@@ -1328,7 +1368,7 @@ loop:
 			if clipData != nil {
 				// The paint operation is sheared or rotated, add a clip path representing
 				// this transformed rectangle.
-				k := opKey{Key: encOp.Key}
+				k := opKey{Key: encOp.key}
 				k = k.SetTransform(t)
 				d.addClipPath(&state, clipData, k, bnd, off)
 				_, hx, _, hy, _, _ := t.Elems()
@@ -1380,11 +1420,11 @@ loop:
 				state.cpath = state.cpath.parent
 			}
 		case ops.TypeSave:
-			id := ops.DecodeSave(encOp.Data)
+			id := ops.DecodeSave(r.encoded.Data)
 			d.save(id, state.t)
 		case ops.TypeLoad:
 			reset()
-			id := ops.DecodeLoad(encOp.Data)
+			id := ops.DecodeLoad(r.encoded.Data)
 			state.t = d.states[id]
 		}
 	}

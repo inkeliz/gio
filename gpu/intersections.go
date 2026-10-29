@@ -30,7 +30,8 @@ type intersectionCache struct {
 	entries, previousEntries []intersectionEntry
 	sources, previousSources []intersectionSource
 	index                    map[intersectionSlot]int
-	dirty, clearPages        []bool
+	clearPages               []bool
+	work                     []int
 }
 
 func (r *renderer) packIntersectionsIncremental(cache *opCache, ops []imageOp, disabled bool) {
@@ -46,14 +47,13 @@ func (r *renderer) packIntersectionsIncremental(cache *opCache, ops []imageOp, d
 	c.entries = c.entries[:0]
 	clear(c.sources)
 	c.sources = c.sources[:0]
-	c.dirty = c.dirty[:0]
+	c.work = c.work[:0]
 	c.clearPages = c.clearPages[:0]
 	for range r.intersections.sizes {
 		c.clearPages = append(c.clearPages, true)
 	}
-	for _, img := range ops {
+	for i, img := range ops {
 		if img.clipType != clipTypeIntersection {
-			c.dirty = append(c.dirty, false)
 			continue
 		}
 		start := len(c.sources)
@@ -76,7 +76,9 @@ func (r *renderer) packIntersectionsIncremental(cache *opCache, ops []imageOp, d
 			old := c.previousEntries[previous]
 			dirty = old.texture != entry.texture || !slices.Equal(c.sources[start:], c.previousSources[old.start:old.end])
 		}
-		c.dirty = append(c.dirty, dirty)
+		if dirty {
+			c.work = append(c.work, i)
+		}
 		if !dirty {
 			c.clearPages[img.place.Idx] = false
 		}
@@ -91,10 +93,8 @@ func (r *renderer) packIntersectionsIncremental(cache *opCache, ops []imageOp, d
 }
 
 func (r *renderer) prepareIntersectionsIncremental(ops []imageOp) {
-	for i, img := range ops {
-		if !r.intersectionCache.dirty[i] {
-			continue
-		}
+	for _, i := range r.intersectionCache.work {
+		img := ops[i]
 		for p := img.path; p != nil; p = p.parent {
 			if p.path {
 				r.ctx.PrepareTexture(r.pather.stenciler.cover(p.place.Idx).tex)
@@ -106,10 +106,8 @@ func (r *renderer) prepareIntersectionsIncremental(ops []imageOp) {
 func (r *renderer) intersectIncremental(ops []imageOp) {
 	fbo := -1
 	fullPage := false
-	for i, img := range ops {
-		if !r.intersectionCache.dirty[i] {
-			continue
-		}
+	for _, i := range r.intersectionCache.work {
+		img := ops[i]
 		if fbo != img.place.Idx {
 			if fbo != -1 {
 				r.ctx.EndRenderPass()

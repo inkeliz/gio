@@ -75,7 +75,63 @@ func (r *Reader) ResetAt(ops *Ops, pc PC) {
 	r.ops = ops
 }
 
-func (r *Reader) Decode() (EncodedOp, bool) {
+// Macro identifies a recorded range. Version changes when its Ops is reset.
+// The range is part of the identity because one Ops can hold several macros.
+type Macro struct {
+	Ops        *Ops
+	Start, End PC
+}
+
+func DecodeMacro(op EncodedOp) Macro {
+	var m macroOp
+	m.decode(op.Data, op.Refs)
+	return Macro{Ops: m.ops, Start: m.start, End: m.end}
+}
+
+func (m Macro) Version() uint32 { return m.Ops.version }
+
+// Decode reads one unexpanded operation in the macro. It skips definitions,
+// leaving calls and deferred operations for the caller to handle.
+func (m Macro) Decode(pc *PC) (EncodedOp, bool) {
+	for pc.data < m.End.data {
+		data := m.Ops.data[pc.data:m.End.data]
+		typ := OpType(data[0])
+		n, nrefs := typ.props()
+		if typ == TypeMacro {
+			var def opMacroDef
+			def.decode(data)
+			if def.endpc == (PC{}) {
+				return EncodedOp{}, false
+			}
+			*pc = def.endpc
+			continue
+		}
+		if typ == TypeAux {
+			n = m.End.data - pc.data
+		}
+		enc := EncodedOp{Key: Key{ops: m.Ops, pc: pc.data, version: m.Version()}, Data: data[:n], Refs: m.Ops.refs[pc.refs : pc.refs+nrefs]}
+		pc.data += n
+		pc.refs += nrefs
+		return enc, true
+	}
+	return EncodedOp{}, false
+}
+
+func (r *Reader) Decode() (EncodedOp, bool) { return r.decode(false) }
+
+// DecodeMacro is Decode with calls reported just after entering their body.
+// SkipMacro can then bypass a body that the caller has already decoded.
+// Normal Decode users, including input routing, never see these calls.
+func (r *Reader) DecodeMacro() (EncodedOp, bool) { return r.decode(true) }
+
+func (r *Reader) SkipMacro() {
+	n := len(r.stack) - 1
+	m := r.stack[n]
+	r.ops, r.pc = m.ops, m.retPC
+	r.stack = r.stack[:n]
+}
+
+func (r *Reader) decode(reportCalls bool) (EncodedOp, bool) {
 	if r.ops == nil {
 		return EncodedOp{}, false
 	}
@@ -146,6 +202,9 @@ func (r *Reader) Decode() (EncodedOp, bool) {
 			})
 			r.ops = op.ops
 			r.pc = op.start
+			if reportCalls {
+				return EncodedOp{Key: key, Data: data, Refs: refs}, true
+			}
 			continue
 		case TypeMacro:
 			var op opMacroDef

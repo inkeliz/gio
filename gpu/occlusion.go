@@ -5,6 +5,7 @@ package gpu
 import (
 	"image"
 	"math"
+	"slices"
 )
 
 // cullOccluded leaves paint indices intact. Hidden opacity groups may be
@@ -19,6 +20,9 @@ func (d *drawOps) cullOccluded() {
 		if l.opStart < 0 || l.opEnd < l.opStart || l.opEnd > len(d.imageOps) || l.parent < -1 || l.parent >= i {
 			return
 		}
+		if i > 0 && l.opStart < d.layers[i-1].opStart {
+			return
+		}
 	}
 	// Collection adds direct paints to a layer. Its complete bounds must also
 	// include children before testing whether an outside rectangle hides it.
@@ -28,12 +32,25 @@ func (d *drawOps) cullOccluded() {
 			d.layers[l.parent].clip = d.layers[l.parent].clip.Union(l.clip)
 		}
 	}
+	// Starts are already in preorder. Sort end boundaries once, preserving
+	// preorder for parents and children that share their final paint.
+	var ends [maxCovers]int
+	for i := range d.layers {
+		ends[i] = i
+	}
+	slices.SortStableFunc(ends[:len(d.layers)], func(a, b int) int {
+		return d.layers[b].opEnd - d.layers[a].opEnd
+	})
+	start, end := len(d.layers)-1, 0
 	var hidden [maxCovers]bool
 	var covers [maxCovers]image.Rectangle
 	ncovers := 0
 	for i := len(d.imageOps) - 1; i >= 0; i-- {
 		// Leave later scopes before entering an earlier adjacent scope.
-		for j, l := range d.layers {
+		for start >= 0 && d.layers[start].opStart >= i+1 {
+			j := start
+			start--
+			l := d.layers[j]
 			if !hidden[j] && l.opStart < l.opEnd && l.opStart == i+1 {
 				ncovers = 0
 			}
@@ -41,7 +58,10 @@ func (d *drawOps) cullOccluded() {
 		jump := false
 		// Layers are recorded in preorder: test parents before children that
 		// share the same final paint.
-		for j, l := range d.layers {
+		for end < len(d.layers) && d.layers[ends[end]].opEnd >= i+1 {
+			j := ends[end]
+			end++
+			l := d.layers[j]
 			if hidden[j] || l.opStart == l.opEnd || l.opEnd != i+1 {
 				continue
 			}
@@ -73,6 +93,17 @@ func (d *drawOps) cullOccluded() {
 		if img.clip.Empty() || (m.material == materialColor && m.color.A == 0) || occludedBy(img.clip, covers[:ncovers]) {
 			img.culled = true
 			continue
+		}
+		// Keep one visible rectangle so opacity-layer indices stay intact and
+		// trimming needs no extra draws, vertices, or texture-coordinate changes.
+		if m.material == materialColor && (img.path == nil || img.path.rect) {
+			for _, cover := range covers[:ncovers] {
+				img.clip = subtractOccludedStrip(img.clip, cover)
+			}
+			if img.clip.Empty() {
+				img.culled = true
+				continue
+			}
 		}
 		if !m.opaque || m.opacity != 1 || (m.material != materialColor && m.material != materialLinearGradient) {
 			continue
@@ -106,6 +137,29 @@ func occludedBy(clip image.Rectangle, covers []image.Rectangle) bool {
 		}
 	}
 	return false
+}
+
+// subtractOccludedStrip removes covered edge strips while retaining a single
+// visible rectangle. Interior cuts and cuts requiring multiple draws stay intact.
+func subtractOccludedStrip(clip, cover image.Rectangle) image.Rectangle {
+	cut := clip.Intersect(cover)
+	if cut.Empty() {
+		return clip
+	}
+	if cut.Min.X == clip.Min.X && cut.Max.X == clip.Max.X {
+		if cut.Min.Y == clip.Min.Y {
+			clip.Min.Y = cut.Max.Y
+		} else if cut.Max.Y == clip.Max.Y {
+			clip.Max.Y = cut.Min.Y
+		}
+	} else if cut.Min.Y == clip.Min.Y && cut.Max.Y == clip.Max.Y {
+		if cut.Min.X == clip.Min.X {
+			clip.Min.X = cut.Max.X
+		} else if cut.Max.X == clip.Max.X {
+			clip.Max.X = cut.Min.X
+		}
+	}
+	return clip
 }
 
 // opaqueInnerRect chooses one central strip, inset a pixel from its boundaries,

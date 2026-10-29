@@ -26,16 +26,25 @@ static void jni_PresentFrame(JNIEnv *env, jobject view, jmethodID method, jboole
 	(*env)->CallVoidMethodA(env, view, method, args);
 }
 
-static jint jni_GetEnv(JavaVM *vm, JNIEnv **env, jint version) {
-	return (*vm)->GetEnv(vm, (void **)env, version);
+typedef struct {
+	JNIEnv *env;
+	jint status;
+} jni_EnvResult;
+
+static jni_EnvResult jni_GetEnv(JavaVM *vm, jint version) {
+	jni_EnvResult result = {0};
+	result.status = (*vm)->GetEnv(vm, (void **)&result.env, version);
+	return result;
 }
 
 static jint jni_GetJavaVM(JNIEnv *env, JavaVM **jvm) {
 	return (*env)->GetJavaVM(env, jvm);
 }
 
-static jint jni_AttachCurrentThread(JavaVM *vm, JNIEnv **p_env, void *thr_args) {
-	return (*vm)->AttachCurrentThread(vm, p_env, thr_args);
+static jni_EnvResult jni_AttachCurrentThread(JavaVM *vm) {
+	jni_EnvResult result = {0};
+	result.status = (*vm)->AttachCurrentThread(vm, &result.env, NULL);
+	return result;
 }
 
 static jint jni_DetachCurrentThread(JavaVM *vm) {
@@ -212,6 +221,7 @@ var gioView struct {
 	hideTextInput        C.jmethodID
 	setInputHint         C.jmethodID
 	postFrameCallback    C.jmethodID
+	cancelFrameCallback  C.jmethodID
 	invalidate           C.jmethodID // requests draw, called from UI thread
 	setCursor            C.jmethodID
 	setOrientation       C.jmethodID
@@ -505,6 +515,7 @@ func Java_org_gioui_GioView_onCreateView(env *C.JNIEnv, class C.jclass, view C.j
 		m.hideTextInput = getMethodID(env, class, "hideTextInput", "()V")
 		m.setInputHint = getMethodID(env, class, "setInputHint", "(I)V")
 		m.postFrameCallback = getMethodID(env, class, "postFrameCallback", "()V")
+		m.cancelFrameCallback = getMethodID(env, class, "cancelFrameCallback", "()V")
 		m.invalidate = getMethodID(env, class, "invalidate", "()V")
 		m.setCursor = getMethodID(env, class, "setCursor", "(I)V")
 		m.setOrientation = getMethodID(env, class, "setOrientation", "(II)V")
@@ -949,6 +960,11 @@ func (w *window) draw(env *C.JNIEnv, sync bool) {
 		Left:   unit.Dp(w.insets.left) * dppp,
 		Right:  unit.Dp(w.insets.right) * dppp,
 	}
+	// Request the next vsync before rendering can run past its deadline.
+	wasAnimating := w.animating
+	if wasAnimating {
+		callVoidMethod(env, w.view, gioView.postFrameCallback)
+	}
 	w.processEvent(frameEvent{
 		FrameEvent: FrameEvent{
 			Now:    time.Now(),
@@ -963,6 +979,8 @@ func (w *window) draw(env *C.JNIEnv, sync bool) {
 	})
 	if w.animating {
 		callVoidMethod(env, w.view, gioView.postFrameCallback)
+	} else if wasAnimating {
+		callVoidMethod(env, w.view, gioView.cancelFrameCallback)
 	}
 	a11yActive, err := callBooleanMethod(env, w.view, gioView.isA11yActive)
 	if err != nil {
@@ -1053,18 +1071,20 @@ func runInJVM(jvm *C.JavaVM, f func(env *C.JNIEnv)) {
 	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	var env *C.JNIEnv
-	if res := C.jni_GetEnv(jvm, &env, C.JNI_VERSION_1_6); res != C.JNI_OK {
-		if res != C.JNI_EDETACHED {
-			panic(fmt.Errorf("JNI GetEnv failed with error %d", res))
+
+	result := C.jni_GetEnv(jvm, C.JNI_VERSION_1_6)
+	if result.status != C.JNI_OK {
+		if result.status != C.JNI_EDETACHED {
+			panic(fmt.Errorf("JNI GetEnv failed with error %d", result.status))
 		}
-		if C.jni_AttachCurrentThread(jvm, &env, nil) != C.JNI_OK {
+		result = C.jni_AttachCurrentThread(jvm)
+		if result.status != C.JNI_OK {
 			panic(errors.New("runInJVM: AttachCurrentThread failed"))
 		}
 		defer C.jni_DetachCurrentThread(jvm)
 	}
 
-	f(env)
+	f(result.env)
 }
 
 func convertKeyCode(code C.jint) (key.Name, bool) {

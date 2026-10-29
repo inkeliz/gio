@@ -2,7 +2,10 @@
 
 package gpu
 
-import "image"
+import (
+	"image"
+	"slices"
+)
 
 type maskIdentity struct {
 	digest [32]byte
@@ -14,14 +17,17 @@ type atlasRect struct {
 	rect image.Rectangle
 }
 
-// atlasAllocator only reuses storage already owned by the renderer.
+// atlasAllocator preserves slots while bounded incremental growth can fit them.
 type atlasAllocator struct {
 	free, scratch []atlasRect
+	sizes         []image.Point
 }
 
 func (a *atlasAllocator) reset(fbos []FBO) {
 	a.free = a.free[:0]
+	a.sizes = a.sizes[:0]
 	for i, f := range fbos {
+		a.sizes = append(a.sizes, f.size)
 		if f.tex != nil {
 			a.free = append(a.free, atlasRect{i, image.Rectangle{Max: f.size}})
 		}
@@ -71,15 +77,45 @@ func (a *atlasAllocator) alloc(size image.Point) (placement, bool) {
 	return p, true
 }
 
+// Bound extra stable-placement growth instead of retaining arbitrarily large
+// sparse atlases. Larger frames retain the ordinary compact packing fallback.
+const maxStableAtlasBytes = 32 << 20
+
+func (a *atlasAllocator) grow(size, viewport, maxDims image.Point, bytesPerPixel int) bool {
+	if len(a.sizes) >= 8 || size.X > maxDims.X || size.Y > maxDims.Y {
+		return false
+	}
+	// One small page gives new glyphs/masks room without resizing old textures.
+	size.X = max(size.X, min(viewport.X, maxDims.X, 512))
+	size.Y = max(size.Y, min(viewport.Y, maxDims.Y, 512))
+	// fboSet.resize adds 5% on allocation; include that padding in the budget.
+	padded := size.Mul(105).Div(100)
+	pixels := int64(padded.X) * int64(padded.Y)
+	for _, page := range a.sizes {
+		pixels += int64(page.X) * int64(page.Y)
+	}
+	if bytesPerPixel <= 0 {
+		bytesPerPixel = 16 // Conservative RGBA32F fallback for other backends.
+	}
+	if pixels*int64(bytesPerPixel) > maxStableAtlasBytes {
+		return false
+	}
+	page := len(a.sizes)
+	a.sizes = append(a.sizes, size)
+	a.free = append(a.free, atlasRect{page, image.Rectangle{Max: size}})
+	return true
+}
+
 type stencilAtlas struct {
 	allocator         atlasAllocator
 	current, previous map[maskIdentity]placement
+	keptPages         int // Budget-approved growth, retained until compact packing.
 }
 
 func maskFor(cache *opCache, p *pathOp) maskIdentity {
-	v, _ := cache.get(p.pathKey)
+	digest := cache.cache[p.cacheIndex-1].data.digest
 	origin := image.Pt(int(p.off.X), int(p.off.Y))
-	return maskIdentity{v.data.digest, p.clip.Sub(origin)}
+	return maskIdentity{digest, p.clip.Sub(origin)}
 }
 
 func (r *renderer) packStencilsStable(cache *opCache, pops *[]*pathOp, disabled bool) {
@@ -117,6 +153,7 @@ func (r *renderer) packStencilsStable(cache *opCache, pops *[]*pathOp, disabled 
 			p.place, s.current[key] = place, place
 		}
 	}
+	preserved := false
 	if stable && !retained {
 		clear(s.current)
 		s.allocator.reset(r.pather.stenciler.fbos.fbos)
@@ -132,14 +169,21 @@ func (r *renderer) packStencilsStable(cache *opCache, pops *[]*pathOp, disabled 
 					break
 				}
 				s.current[key] = place
+				preserved = true
 			}
 		}
 	}
 	if stable && !retained {
+		grown := false
 		for _, p := range ops {
 			key := maskFor(cache, p)
 			if _, found := s.current[key]; !found {
 				place, fits := s.allocator.alloc(p.clip.Size())
+				if !fits && preserved && !grown && s.allocator.grow(p.clip.Size(), r.blitter.viewport, r.packer.maxDims, r.ctx.Caps().FloatRenderTargetBytes) {
+					grown = true
+					s.keptPages = len(s.allocator.sizes)
+					place, fits = s.allocator.alloc(p.clip.Size())
+				}
 				if !fits {
 					stable = false
 					break
@@ -154,12 +198,18 @@ func (r *renderer) packStencilsStable(cache *opCache, pops *[]*pathOp, disabled 
 		for _, place := range s.current {
 			pages = max(pages, place.Idx+1)
 		}
+		pages = max(pages, s.keptPages)
 		r.packer.clear()
-		for _, f := range r.pather.stenciler.fbos.fbos[:pages] {
-			r.packer.sizes = append(r.packer.sizes, f.size)
+		if retained {
+			for _, f := range r.pather.stenciler.fbos.fbos[:pages] {
+				r.packer.sizes = append(r.packer.sizes, f.size)
+			}
+		} else {
+			r.packer.sizes = append(r.packer.sizes, s.allocator.sizes[:pages]...)
 		}
 	} else {
 		// Compact normally when existing pages cannot accommodate this frame.
+		s.keptPages = 0
 		r.packStencils(pops)
 		clear(s.current)
 		for _, p := range *pops {
@@ -170,6 +220,11 @@ func (r *renderer) packStencilsStable(cache *opCache, pops *[]*pathOp, disabled 
 				s.current[key] = p.place
 			}
 		}
+	}
+	// Masks occupy disjoint atlas slots, so page grouping does not change
+	// their contents and avoids reopening a page after rendering another one.
+	if !retained && len(r.packer.sizes) > 1 {
+		slices.SortStableFunc(*pops, func(a, b *pathOp) int { return a.place.Idx - b.place.Idx })
 	}
 	s.previous, s.current = s.current, s.previous
 }

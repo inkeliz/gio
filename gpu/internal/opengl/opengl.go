@@ -3,6 +3,7 @@
 package opengl
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"image"
@@ -54,6 +55,7 @@ type glState struct {
 	readFBO     gl.Framebuffer
 	vertAttribs [8]struct {
 		obj        gl.Buffer
+		valid      bool
 		enabled    bool
 		size       int
 		typ        gl.Enum
@@ -139,15 +141,15 @@ type glshader struct {
 }
 
 type program struct {
-	backend      *Backend
-	obj          gl.Program
-	vertUniforms uniforms
-	fragUniforms uniforms
+	backend  *Backend
+	obj      gl.Program
+	uniforms uniforms
 }
 
 type uniforms struct {
-	locs []uniformLocation
-	size int
+	locs      []uniformLocation
+	size      int
+	cacheable bool
 }
 
 type uniformLocation struct {
@@ -155,6 +157,8 @@ type uniformLocation struct {
 	offset  int
 	typ     shader.DataType
 	size    int
+	last    [16]byte
+	valid   bool
 }
 
 // textureTriple holds the type settings for
@@ -209,6 +213,13 @@ func newOpenGLDevice(api driver.OpenGL) (driver.Device, error) {
 	}
 	if ffboErr == nil {
 		b.feats.Features |= driver.FeatureFloatRenderTargets
+		b.feats.FloatRenderTargetBytes = 2
+		if floatTriple.typ == gl.FLOAT {
+			b.feats.FloatRenderTargetBytes = 4
+		}
+		if floatTriple.format == gl.RGBA {
+			b.feats.FloatRenderTargetBytes *= 4
+		}
 	}
 	if gles31 && !brokenGLES31 {
 		b.feats.Features |= driver.FeatureCompute
@@ -413,8 +424,12 @@ func (s *glState) setVertexAttribArray(f *gl.Functions, idx int, enabled bool) {
 }
 
 func (s *glState) vertexAttribPointer(f *gl.Functions, buf gl.Buffer, idx, size int, typ gl.Enum, normalized bool, stride, offset int) {
-	s.bindBuffer(f, gl.ARRAY_BUFFER, buf)
 	a := &s.vertAttribs[idx]
+	if a.valid && a.obj.Equal(buf) && a.size == size && a.typ == typ && a.normalized == normalized && a.stride == stride && a.offset == uintptr(offset) {
+		return
+	}
+	s.bindBuffer(f, gl.ARRAY_BUFFER, buf)
+	a.valid = true
 	a.obj = buf
 	a.size = size
 	a.typ = typ
@@ -443,6 +458,10 @@ func (s *glState) bindVertexArray(f *gl.Functions, a gl.VertexArray) {
 	if !a.Equal(s.vertArray) {
 		f.BindVertexArray(a)
 		s.vertArray = a
+		// Attribute descriptors belong to the bound vertex array.
+		for i := range s.vertAttribs {
+			s.vertAttribs[i].valid = false
+		}
 	}
 }
 
@@ -458,6 +477,11 @@ func (s *glState) deleteFramebuffer(f *gl.Functions, fbo gl.Framebuffer) {
 
 func (s *glState) deleteBuffer(f *gl.Functions, b gl.Buffer) {
 	f.DeleteBuffer(b)
+	for i := range s.vertAttribs {
+		if b.Equal(s.vertAttribs[i].obj) {
+			s.vertAttribs[i].valid = false
+		}
+	}
 	if b.Equal(s.arrayBuf) {
 		s.arrayBuf = gl.Buffer{}
 	}
@@ -493,6 +517,9 @@ func (s *glState) deleteVertexArray(f *gl.Functions, a gl.VertexArray) {
 	f.DeleteVertexArray(a)
 	if a.Equal(s.vertArray) {
 		s.vertArray = gl.VertexArray{}
+		for i := range s.vertAttribs {
+			s.vertAttribs[i].valid = false
+		}
 	}
 }
 
@@ -956,8 +983,9 @@ func (b *Backend) newProgram(desc driver.PipelineDesc) (*program, error) {
 		return nil, fmt.Errorf("opengl: program link failed: %s", strings.TrimSpace(log))
 	}
 	prog := &program{
-		backend: b,
-		obj:     p,
+		backend:  b,
+		obj:      p,
+		uniforms: uniforms{cacheable: !b.sharedCtx && runtime.GOOS != "js"},
 	}
 	b.glstate.useProgram(b.funcs, p)
 	// Bind texture uniforms.
@@ -973,8 +1001,8 @@ func (b *Backend) newProgram(desc driver.PipelineDesc) (*program, error) {
 			b.funcs.Uniform1i(u, tex.Binding)
 		}
 	}
-	prog.vertUniforms.setup(b.funcs, p, vsh.src.Uniforms.Size, vsh.src.Uniforms.Locations)
-	prog.fragUniforms.setup(b.funcs, p, fsh.src.Uniforms.Size, fsh.src.Uniforms.Locations)
+	prog.uniforms.setup(b.funcs, p, vsh.src.Uniforms.Size, vsh.src.Uniforms.Locations)
+	prog.uniforms.setup(b.funcs, p, fsh.src.Uniforms.Size, fsh.src.Uniforms.Locations)
 	return prog, nil
 }
 
@@ -991,8 +1019,7 @@ func (b *Backend) BindUniforms(buf driver.Buffer) {
 	if bf.typ&driver.BufferBindingUniforms == 0 {
 		panic("not a uniform buffer")
 	}
-	b.state.pipeline.prog.vertUniforms.update(b.funcs, bf)
-	b.state.pipeline.prog.fragUniforms.update(b.funcs, bf)
+	b.state.pipeline.prog.uniforms.update(b.funcs, bf)
 }
 
 func (b *Backend) BindProgram(prog driver.Program) {
@@ -1009,12 +1036,28 @@ func (p *program) Release() {
 }
 
 func (u *uniforms) setup(funcs *gl.Functions, p gl.Program, uniformSize int, uniforms []shader.UniformLocation) {
-	u.locs = make([]uniformLocation, len(uniforms))
-	for i, uniform := range uniforms {
+	for _, uniform := range uniforms {
 		loc := funcs.GetUniformLocation(p, uniform.Name)
-		u.locs[i] = uniformLocation{uniform: loc, offset: uniform.Offset, typ: uniform.Type, size: uniform.Size}
+		if !loc.Valid() {
+			continue
+		}
+		duplicate := false
+		for _, old := range u.locs {
+			if !old.uniform.Equal(loc) {
+				continue
+			}
+			if old.offset == uniform.Offset && old.typ == uniform.Type && old.size == uniform.Size {
+				duplicate = true
+			} else {
+				// Preserve ordered writes if shader stages use different layouts.
+				u.cacheable = false
+			}
+		}
+		if !u.cacheable || !duplicate {
+			u.locs = append(u.locs, uniformLocation{uniform: loc, offset: uniform.Offset, typ: uniform.Type, size: uniform.Size})
+		}
 	}
-	u.size = uniformSize
+	u.size = max(u.size, uniformSize)
 }
 
 func (p *uniforms) update(funcs *gl.Functions, buf *buffer) {
@@ -1022,11 +1065,13 @@ func (p *uniforms) update(funcs *gl.Functions, buf *buffer) {
 		panic(fmt.Errorf("uniform buffer too small, got %d need %d", buf.size, p.size))
 	}
 	data := buf.data
-	for _, u := range p.locs {
-		if !u.uniform.Valid() {
+	for i := range p.locs {
+		u := &p.locs[i]
+		data := data[u.offset:]
+		n := u.size * 4
+		if p.cacheable && u.valid && bytes.Equal(u.last[:n], data[:n]) {
 			continue
 		}
-		data := data[u.offset:]
 		switch {
 		case u.typ == shader.DataTypeFloat && u.size == 1:
 			data := data[:4]
@@ -1047,10 +1092,20 @@ func (p *uniforms) update(funcs *gl.Functions, buf *buffer) {
 		default:
 			panic("unsupported uniform data type or size")
 		}
+		if p.cacheable {
+			copy(u.last[:n], data[:n])
+			u.valid = true
+		}
 	}
 }
 
-func (b *buffer) Upload(data []byte) {
+func (b *buffer) Upload(data []byte) { b.upload(data, false) }
+
+// UploadDiscard replaces storage before a partial upload, so streaming vertices
+// never wait on data still being consumed by a previous frame.
+func (b *buffer) UploadDiscard(data []byte) { b.upload(data, true) }
+
+func (b *buffer) upload(data []byte, discard bool) {
 	if b.immutable {
 		panic("immutable buffer")
 	}
@@ -1067,6 +1122,9 @@ func (b *buffer) Upload(data []byte) {
 			// See also https://github.com/godotengine/godot/issues/23956.
 			b.backend.funcs.BufferData(firstBinding, b.size, gl.DYNAMIC_DRAW, data)
 		} else {
+			if discard {
+				b.backend.funcs.BufferData(firstBinding, b.size, gl.DYNAMIC_DRAW, nil)
+			}
 			b.backend.funcs.BufferSubData(firstBinding, 0, data)
 		}
 	}

@@ -100,16 +100,17 @@ func newOpCache() *opCache {
 	}
 }
 
-func (r *opCache) get(key opKey) (o opCacheValue, exist bool) {
+// get returns a slot index plus one, or zero if the key is absent. Slots stay
+// valid through the current frame, including when appending grows cache.
+func (r *opCache) get(key opKey) int {
 	v := r.index[key]
-	if v == 0 {
-		return
+	if v != 0 {
+		r.cache[v-1].keep = true
 	}
-	r.cache[v-1].keep = true
-	return r.cache[v-1], true
+	return v
 }
 
-func (r *opCache) put(key opKey, val opCacheValue) {
+func (r *opCache) put(key opKey, val opCacheValue) int {
 	v := r.index[key]
 	val.keep = true
 	val.key = key
@@ -123,10 +124,12 @@ func (r *opCache) put(key opKey, val opCacheValue) {
 		} else {
 			r.cache = append(r.cache, val)
 		}
-		r.index[key] = i + 1
+		v = i + 1
+		r.index[key] = v
 	} else {
 		r.cache[v-1] = val
 	}
+	return v
 }
 
 func (r *opCache) frame() {
@@ -146,10 +149,12 @@ func (r *opCache) frame() {
 		}
 		if v.data.data != nil {
 			v.data.release()
-			r.cache[i].data.data = nil
 		}
-		r.cache[i].verts = nil
-		delete(r.index, v.key)
+		// A freed slot can retain a key now owned by a different, live slot.
+		if r.index[v.key] == i+1 {
+			delete(r.index, v.key)
+		}
+		r.cache[i] = opCacheValue{}
 		r.freelist = append(r.freelist, i)
 	}
 }

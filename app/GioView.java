@@ -187,6 +187,11 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 		private final long[] geometryFrameTimes = new long[2];
 		private final boolean[] geometryFrameSync = new boolean[2];
 		private int geometryFrameCount;
+		private long publishedThrough;
+		private int uiSubmits;
+		private final Runnable resume = new Runnable() {
+			@Override public void run() { resumeFrame(); }
+		};
 
 		AtomicSurface(GioView view, int width, int height) {
 			this.view = view;
@@ -219,10 +224,13 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 			}, images);
 		}
 
-		void present(boolean syncGeometry, long beforeSwap) {
+		synchronized void present(boolean syncGeometry, long beforeSwap) {
 			geometryFrameTimes[geometryFrameCount] = beforeSwap;
 			geometryFrameSync[geometryFrameCount++] = syncGeometry;
 			pending |= syncGeometry;
+			// The next swap starts after this publication. An earlier image's
+			// default CLOCK_MONOTONIC timestamp therefore has its metadata here.
+			publishedThrough = System.nanoTime();
 		}
 
 		private void acquire() {
@@ -250,16 +258,41 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 			}
 			if (acquired != null) {
 				final Image image = acquired;
-				view.getContext().getMainExecutor().execute(new Runnable() {
-					@Override public void run() {
-						if (closed) {
-							image.close();
-							released();
-						} else {
-							submit(image);
-						}
+				boolean direct;
+				int result = 0;
+				synchronized (this) {
+					final long timestamp = image.getTimestamp();
+					direct = closed || (uiSubmits == 0 && geometryFrameCount > 0
+						&& timestamp >= geometryFrameTimes[0] && timestamp <= publishedThrough
+						&& !geometryFrameSync[frameFor(timestamp)]);
+					if (direct) {
+						result = queueImage(image);
+					} else {
+						// Keep unpublished/native images and everything behind them
+						// in the existing main-thread order.
+						uiSubmits++;
 					}
-				});
+				}
+				if (direct) {
+					if (result == 1) {
+						view.getContext().getMainExecutor().execute(resume);
+					}
+				} else {
+					view.getContext().getMainExecutor().execute(new Runnable() {
+						@Override public void run() {
+							int result;
+							synchronized (AtomicSurface.this) {
+								result = queueImage(image);
+								uiSubmits--;
+							}
+							if (result == 2) {
+								committed();
+							} else if (result == 1) {
+								resumeFrame();
+							}
+						}
+					});
+				}
 				// Drain notifications coalesced while the maximum images were held.
 				images.post(new Runnable() {
 					@Override public void run() { acquire(); }
@@ -267,10 +300,27 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 			}
 		}
 
-		private void submit(final Image image) {
+		// Called with the monitor held; a worker must not pass an older UI image.
+		private int frameFor(long timestamp) {
+			int frame = 0;
+			while (frame + 1 < geometryFrameCount && geometryFrameTimes[frame + 1] <= timestamp) {
+				frame++;
+			}
+			return frame;
+		}
+
+		// 0: closed/failed; 1: queued; 2: native geometry consumed without a draw.
+		// Resuming Go must happen only after releasing this monitor.
+		private synchronized int queueImage(final Image image) {
+			if (closed) {
+				image.close();
+				released();
+				return 0;
+			}
 			boolean transferred = false;
 			boolean queued = false;
 			boolean resume = false;
+			boolean retained = false;
 			final SurfaceControl.Transaction transaction = new SurfaceControl.Transaction();
 			try (HardwareBuffer buffer = image.getHardwareBuffer();
 					SyncFence fence = image.getFence()) {
@@ -302,10 +352,7 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 				// EGL timestamps the buffer during the swap, after the captured lower bound.
 				// Skip records for buffers replaced before ImageReader acquired them.
 				final long timestamp = image.getTimestamp();
-				int frame = 0;
-				while (frame + 1 < geometryFrameCount && geometryFrameTimes[frame + 1] <= timestamp) {
-					frame++;
-				}
+				int frame = frameFor(timestamp);
 				final boolean syncGeometry = geometryFrameSync[frame];
 				geometryFrameCount -= frame + 1;
 				for (int i = 0; i < geometryFrameCount; i++) {
@@ -318,17 +365,16 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 					.setBufferTransform(control, 0)
 					.setCrop(control, image.getCropRect())
 					// Gio also encodes sRGB when EGL uses its linear-surface fallback.
-					.setDataSpace(control, DataSpace.DATASPACE_SRGB)
-					.addTransactionCommittedListener(view.getContext().getMainExecutor(), new SurfaceControl.TransactionCommittedListener() {
+					.setDataSpace(control, DataSpace.DATASPACE_SRGB);
+				if (geometryChanged) {
+					transaction.addTransactionCommittedListener(view.getContext().getMainExecutor(), new SurfaceControl.TransactionCommittedListener() {
 						@Override public void onTransactionCommitted() {
 							// Android 13 retains this object until its render-thread callback.
 							transaction.close();
-							if (geometryChanged) {
-								committed();
-							}
+							committed();
 						}
 					});
-				if (geometryChanged) {
+					retained = true;
 					root.applyTransactionOnDraw(transaction);
 					view.getRootView().invalidate();
 				} else {
@@ -340,7 +386,7 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 			} catch (IOException error) {
 				fallback();
 			} finally {
-				if (!queued) {
+				if (!queued || !retained) {
 					transaction.close();
 				}
 				if (!transferred) {
@@ -348,13 +394,7 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 					released();
 				}
 			}
-			if (resume) {
-				// Geometry has been consumed and the buffer queued. A later commit
-				// callback must not clear the next frame's pending state.
-				committed();
-			} else if (queued) {
-				resumeFrame();
-			}
+			return queued ? (resume ? 2 : 1) : 0;
 		}
 
 		private void fallback() {
@@ -372,19 +412,32 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 		}
 
 		private void committed() {
-			if (closed) {
-				return;
+			synchronized (this) {
+				if (closed) {
+					return;
+				}
+				pending = false;
 			}
-			pending = false;
 			resumeFrame();
 		}
 
-		private void resumeFrame() {
-			if (!closed && !pending && redraw && geometryFrameCount < 2) {
-				redraw = false;
-				// Resume now instead of waiting for another vsync.
-				view.doFrame(System.nanoTime());
+		synchronized boolean canDrawFrame() {
+			if (pending || geometryFrameCount >= 2) {
+				redraw = true;
+				return false;
 			}
+			return true;
+		}
+
+		private void resumeFrame() {
+			synchronized (this) {
+				if (closed || pending || !redraw || geometryFrameCount >= 2) {
+					return;
+				}
+				redraw = false;
+			}
+			// Resume now instead of waiting for another vsync, outside the monitor.
+			view.doFrame(System.nanoTime());
 		}
 
 		private synchronized void released() {
@@ -431,11 +484,7 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 
 	boolean canDrawFrame() {
 		// Leave a free producer slot while acquired images await this UI thread.
-		if (atomicSurface != null && (atomicSurface.pending || atomicSurface.geometryFrameCount >= 2)) {
-			atomicSurface.redraw = true;
-			return false;
-		}
-		return true;
+		return atomicSurface == null || atomicSurface.canDrawFrame();
 	}
 
 	void presentFrame(boolean syncGeometry, long beforeSwap) {
@@ -780,6 +829,10 @@ public final class GioView extends SurfaceView implements Choreographer.FrameCal
 	void postFrameCallback() {
 		Choreographer.getInstance().removeFrameCallback(this);
 		Choreographer.getInstance().postFrameCallback(this);
+	}
+
+	void cancelFrameCallback() {
+		Choreographer.getInstance().removeFrameCallback(this);
 	}
 
 	@Override public void doFrame(long nanos) {

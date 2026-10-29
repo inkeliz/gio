@@ -397,9 +397,10 @@ func (w *Window) scheduleInvalidate(t time.Time) {
 					return
 				case t := <-w.timer.update:
 					if timer != nil {
-						timer.Stop()
+						timer.Reset(time.Until(t))
+					} else {
+						timer = time.NewTimer(time.Until(t))
 					}
-					timer = time.NewTimer(time.Until(t))
 				case <-timeC:
 					w.Invalidate()
 				}
